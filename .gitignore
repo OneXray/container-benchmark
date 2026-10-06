@@ -1,0 +1,31 @@
+# Local experiment outputs (keep conclusions on disk, not in Git).
+/.work/
+/conclusions/
+/.cache/
+
+# Python environments, caches and coverage.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Rust builds and Python packaging, including nested fixture projects.
+target/
+build/
+dist/
+*.egg-info/
+
+# Local credentials and editor / OS temporary files.
+.env
+.env.*
+!.env.example
+!.env.template
+.DS_Store
+*.swp
+*.swo
+*~
