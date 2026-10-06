@@ -34,14 +34,19 @@ def parse_args(argv=None, *, stress=False):
         default=[2000] if stress else [1000, 1500, 2000],
     )
     parser.add_argument("--seconds", type=int, default=60)
+    parser.set_defaults(geodata_codes={"geosite_codes": ["cn"], "geoip_codes": ["cn"]})
     if stress:
-        parser.add_argument("--geodata-records", type=int, default=1_280_000)
+        parser.add_argument(
+            "--geodata-update",
+            action="store_true",
+            help="reload the frozen assets through the real updater during pressure",
+        )
     args = parser.parse_args(argv)
     args.transport, args.dns_qps = "mixed", 1000
     if not 1 <= args.seconds <= 1800:
         parser.error("duration must be 1..1800 seconds")
-    if stress and args.geodata_records <= 0:
-        parser.error("GeoData record target must be positive")
+    if stress and args.geodata_update and args.seconds < 20:
+        parser.error("GeoData update pressure requires at least 20 seconds")
     args.stress = stress
     args.core, args.rates = (
         list(dict.fromkeys(args.core)),
@@ -83,11 +88,13 @@ def _annotate_stress_memory(result):
         )
 
 
-def _configure(core, root, assets, samples, origins, dns, tun):
+def _configure(core, root, assets, samples, origins, dns, tun, *, geodata_update=False):
     from . import core_mihomo_adapter, core_vcore_adapter
 
     if core == "vcore":
-        return core_vcore_adapter.configure(root, assets, samples, origins, dns, tun)
+        return core_vcore_adapter.configure(
+            root, assets, samples, origins, dns, tun, geodata_update=geodata_update
+        )
     if core != "mihomo":
         raise ValueError("unsupported comparison core")
     result = core_mihomo_adapter.configure(root, assets, samples, origins, dns, tun)
@@ -127,6 +134,7 @@ def _guest_run(root, core):
                 origins,
                 dns,
                 tun,
+                geodata_update=getattr(args, "geodata_update", False),
             )
             report["differences"] = configured.get("differences", [])
             process = NativeProcess(
@@ -172,6 +180,9 @@ def _guest_run(root, core):
                         origins,
                         request["source"],
                     )
+                    load_end_ns = (
+                        root / scene / "start"
+                    ).stat().st_mtime_ns + args.seconds * 1_000_000_000
                     after = process.boundary(scene + ":end")
                     elapsed = time.monotonic() - clock
                     case = workload.summarize(
@@ -200,6 +211,38 @@ def _guest_run(root, core):
                             traffic
                         )
                     report["cases"].append(case)
+                    if getattr(args, "geodata_update", False):
+                        from .geodata_update import summarize as summarize_update
+
+                        update = summarize_update(
+                            root,
+                            root / "rules" / request["assets_directory"],
+                            load_end_ns=load_end_ns,
+                        )
+                        report["geodata_update"] = update
+                        if update["status"] != "PASS":
+                            raise RuntimeError(
+                                "real GeoData update did not complete during load"
+                            )
+                        tun.reject(samples["ip_positive"][4])
+                        restored, _ = workload.run(
+                            root,
+                            root / "restored-readiness",
+                            args,
+                            "tcp",
+                            tun,
+                            samples,
+                            origins,
+                            request["source"],
+                            probe=True,
+                        )
+                        update["restored_route_checks"] = all(
+                            row.get("complete") for row in restored
+                        )
+                        if not update["restored_route_checks"]:
+                            raise RuntimeError(
+                                "post-update GeoData route witnesses failed"
+                            )
                     save(root / "report.json", report)
                     time.sleep(1)
             finally:
@@ -226,7 +269,6 @@ def main(argv=None, *, stress=False):
     from .geodata import (
         acquire,
         contains_ip,
-        prepare_stress_assets,
         selection_statistics,
         witnesses,
     )
@@ -251,6 +293,7 @@ def main(argv=None, *, stress=False):
                 "memory_bytes": 8 * 1024**3,
                 "network": "NAT",
                 "queue_overrides": False,
+                "geodata_update": getattr(parsed, "geodata_update", False),
             },
             "identities": {},
             "runs": {},
@@ -273,16 +316,16 @@ def main(argv=None, *, stress=False):
             assets = root / "rules" / acquired["directory"]
             stress_selection = None
             if stress:
-                stress_selection = prepare_stress_assets(
-                    assets, root / "rules/stress", parsed.geodata_records
-                )
-                assets = root / "rules/stress"
+                stress_selection = {
+                    "mode": "fixed-cn",
+                    "codes": parsed.geodata_codes,
+                    "source_assets_unmodified": True,
+                }
             samples = witnesses(assets)
-            if stress_selection is not None:
-                samples.update(stress_selection["codes"])
+            if stress:
                 report["inputs"]["memory_target_bytes"] = 50_000_000
             report["geodata"] = selection_statistics(
-                assets, codes=stress_selection["codes"] if stress_selection else None
+                assets, codes=parsed.geodata_codes
             ) | {"assets": acquired, "stress_selection": stress_selection}
             report["inputs"]["go"] = build_traffic(root)
             report["inputs"]["traffic_sha256"] = sha256(
@@ -313,8 +356,16 @@ def main(argv=None, *, stress=False):
                 for core in parsed.core:
                     if core == "vcore":
                         report["identities"][core] = core_vcore_adapter.build(
-                            guest, root
+                            guest,
+                            root,
+                            geodata_update=getattr(parsed, "geodata_update", False),
                         )
+                        if stress:
+                            from .geodata_probe import run as probe_geodata
+
+                            report["geodata_probe"] = probe_geodata(
+                                guest, root, assets=assets
+                            )
                     else:
                         guest.execute(
                             core_mihomo_adapter.version_command(
@@ -330,6 +381,9 @@ def main(argv=None, *, stress=False):
             args = workload.fixed_args(
                 parsed.rates[0], parsed.seconds, parsed.transport, parsed.dns_qps
             )
+            args.geodata_update = getattr(parsed, "geodata_update", False)
+            if args.geodata_update:
+                args.geodata_assets = str(assets)
             with workload.origins(root, args, samples, image) as (origins, dns, peers):
                 report["origins"] = peers
                 if any(contains_ip(assets, row.ipv4) for row in origins):
@@ -341,6 +395,7 @@ def main(argv=None, *, stress=False):
                         args = workload.fixed_args(
                             rate, parsed.seconds, parsed.transport, parsed.dns_qps
                         )
+                        args.geodata_update = getattr(parsed, "geodata_update", False)
                         job = root / f"{core}-{rate}"
                         job.mkdir()
                         for name in ("artifacts", "rules"):

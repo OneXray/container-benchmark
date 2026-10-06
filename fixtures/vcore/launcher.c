@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <time.h>
 
 static char instance[21];
 
@@ -50,8 +52,23 @@ static char *substitute(const char *request) {
     return output;
 }
 
+static int observe_geodata(FILE *output) {
+    char *reply = VCoreInvoke("{\"apiVersion\":5,\"method\":\"getGeoDataState\",\"payload\":{}}");
+    if (!reply) return 0;
+    struct timespec now;
+    int success = clock_gettime(CLOCK_REALTIME, &now) == 0
+        && strstr(reply, "\"success\":true") != NULL;
+    if (success) {
+        success = fprintf(output, "{\"time_ns\":%lld,\"response\":%s}\n",
+            (long long)now.tv_sec * 1000000000LL + now.tv_nsec, reply) > 0
+            && fflush(output) == 0;
+    }
+    VCoreFree(reply);
+    return success;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: vcore requests.jsonl\n"); return 2; }
+    if (argc != 2 && argc != 3) { fprintf(stderr, "usage: vcore requests.jsonl [geodata-state.jsonl]\n"); return 2; }
     sigset_t stopped;
     sigemptyset(&stopped); sigaddset(&stopped, SIGINT); sigaddset(&stopped, SIGTERM);
     if (sigprocmask(SIG_BLOCK, &stopped, NULL)) return 2;
@@ -72,8 +89,23 @@ int main(int argc, char **argv) {
     free(line); fclose(source);
     if (good) {
         puts("benchmark-ready"); fflush(stdout);
-        int received;
-        if (sigwait(&stopped, &received)) good = 0;
+        if (argc == 3) {
+            FILE *observations = fopen(argv[2], "w");
+            if (!observations) good = 0;
+            else {
+                while (good) {
+                    if (!observe_geodata(observations)) { good = 0; break; }
+                    struct timespec interval = { .tv_sec = 0, .tv_nsec = 100000000 };
+                    int received = sigtimedwait(&stopped, NULL, &interval);
+                    if (received >= 0) break;
+                    if (errno != EAGAIN && errno != EINTR) good = 0;
+                }
+                if (fclose(observations)) good = 0;
+            }
+        } else {
+            int received;
+            if (sigwait(&stopped, &received)) good = 0;
+        }
     }
     if (instance[0]) {
         if (!lifecycle("stop")) good = 0;

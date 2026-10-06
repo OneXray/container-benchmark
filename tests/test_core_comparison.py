@@ -60,17 +60,36 @@ class ComparisonTests(unittest.TestCase):
             args = comparison.parse_args(["--source", "vcore=" + source], stress=True)
             self.assertEqual(args.core, ["vcore"])
             self.assertEqual(args.rates, [2000])
-            self.assertEqual(args.geodata_records, 1_280_000)
             self.assertEqual(
                 (args.seconds, args.dns_qps, args.transport), (60, 1000, "mixed")
             )
-            with (
-                contextlib.redirect_stderr(io.StringIO()),
-                self.assertRaises(SystemExit),
-            ):
-                comparison.parse_args(
-                    ["--source", "vcore=" + source, "--geodata-records", "4"]
-                )
+
+    def test_geodata_scope_is_fixed_cn_for_comparison_and_pressure(self):
+        with tempfile.TemporaryDirectory() as source:
+            for stress in (False, True):
+                with self.subTest(stress=stress):
+                    args = comparison.parse_args(
+                        ["--source", "vcore=" + source],
+                        stress=stress,
+                    )
+                    self.assertEqual(
+                        args.geodata_codes,
+                        {
+                            "geosite_codes": ["cn"],
+                            "geoip_codes": ["cn"],
+                        },
+                    )
+
+    def test_geodata_record_derivation_is_no_longer_exposed(self):
+        with (
+            tempfile.TemporaryDirectory() as source,
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            comparison.parse_args(
+                ["--source", "vcore=" + source, "--geodata-records", "1280000"],
+                stress=True,
+            )
 
     def test_stress_memory_gate_uses_final_process_peak_and_valid_observation(self):
         for status, peak, expected in (
@@ -87,6 +106,32 @@ class ComparisonTests(unittest.TestCase):
                 comparison._annotate_stress_memory(report)
                 self.assertEqual(report["cases"][0]["peak_bytes"], peak)
                 self.assertEqual(report["cases"][0]["memory_target_met"], expected)
+
+    def test_geodata_update_is_explicit_stress_only_and_needs_overlap_window(self):
+        with tempfile.TemporaryDirectory() as source:
+            args = comparison.parse_args(
+                ["--source", "vcore=" + source, "--geodata-update"], stress=True
+            )
+            self.assertTrue(args.geodata_update)
+            self.assertEqual((args.rates, args.seconds), ([2000], 60))
+            for values, stress in (
+                (["--core", "mihomo", "--geodata-update"], False),
+                (
+                    [
+                        "--source",
+                        "vcore=" + source,
+                        "--geodata-update",
+                        "--seconds",
+                        "3",
+                    ],
+                    True,
+                ),
+            ):
+                with (
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    comparison.parse_args(values, stress=stress)
 
 
 if __name__ == "__main__":

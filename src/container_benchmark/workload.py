@@ -546,11 +546,30 @@ def origins(root, args, witnesses, image):
                     "nohup python3 -B dns.py /run/benchmark/origins/dns.json "
                     ">dns.log 2>&1 </dev/null &",
                 )
+                if getattr(args, "geodata_update", False):
+                    assets = Path(args.geodata_assets).relative_to(root).as_posix()
+                    save(
+                        directory / "geodata.json",
+                        {
+                            "root": "/run/benchmark",
+                            "assets": "/run/benchmark/" + assets,
+                        },
+                    )
+                    commands.insert(
+                        0,
+                        "nohup python3 -B "
+                        "/src/benchmark/fixtures/workload/geodata_origin.py "
+                        "/run/benchmark/origins/geodata.json "
+                        ">/run/benchmark/origins/geodata.log 2>&1 </dev/null &",
+                    )
             guest.execute(
                 ["/bin/sh", "-ec", "\n".join(commands)],
                 directory / (str(index) + "-launch.log"),
                 timeout=15,
             )
             guest.peer.wait_tcp(24003)
+            if index == 1 and getattr(args, "geodata_update", False):
+                guest.peer.wait_tcp(24005)
+                guest.peer.wait_tcp(24006)
             record["hit" if index == 0 else "miss"] = guest.record
         yield guests, negative, record

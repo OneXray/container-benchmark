@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import re
+import shutil
 import time
 import urllib.parse
 import urllib.request
@@ -15,6 +16,7 @@ from .download_cache import daily
 from .inputs import protobuf_fields, save
 
 ASSET_BASE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+SITE_TYPES = {0: "Plain", 1: "Regex", 2: "Domain", 3: "Full"}
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
@@ -148,11 +150,11 @@ def selection_statistics(assets, *, codes=None):
             for code in selected_codes
             for record in _records(categories[code])
         ]
-        kinds, unique, value_bytes = Counter(), set(), 0
+        kinds, attributes, unique, value_bytes = Counter(), Counter(), set(), 0
         for entry in entries:
             if kind == "geosite":
                 match_type, value = entry.get(1, 0), bytes(entry[2])
-                if match_type not in (0, 1, 2, 3):
+                if match_type not in SITE_TYPES:
                     raise ValueError("unknown GeoSite match type")
                 kinds[str(match_type)] += 1
                 value_bytes += len(value)
@@ -176,6 +178,18 @@ def selection_statistics(assets, *, codes=None):
             "value_bytes": value_bytes,
             "types": dict(kinds),
         }
+        if kind == "geosite":
+            for code in selected_codes:
+                for record in _records(categories[code]):
+                    for field, wire, attribute in protobuf_fields(record):
+                        if (field, wire) == (3, 2):
+                            for field, wire, key in protobuf_fields(attribute):
+                                if (field, wire) == (1, 2):
+                                    attributes[bytes(key).decode("ascii").lower()] += 1
+            result[kind]["type_names"] = {
+                name: kinds[str(number)] for number, name in SITE_TYPES.items()
+            }
+            result[kind]["attribute_keys"] = dict(sorted(attributes.items()))
     return result
 
 
@@ -217,71 +231,143 @@ def _field_bytes(field, value):
     return result
 
 
-def prepare_stress_assets(upstream, destination, target):
-    """Keep an exact real-record workload, with GeoIP priority, outside comparison.
+def prepare_stress_assets(upstream, destination, target=None):
+    """Freeze all original assets, or derive an explicit comparison input size.
 
-    Linux deliberately has no mobile cap: make the retained fixture explicit
-    instead of changing the production build or inventing duplicate records.
-    Preserve record payloads from the frozen upstream DATs, trimming only the
-    final selected category prefix. Cache/download originals remain untouched.
+    ``target=None`` retains every original byte and category. A numeric target
+    is only a benchmark input size, never a production record limit: preserve
+    all GeoIP, complete CN and every Plain/Regex category, then fill from other
+    large-category prefixes. Record payloads, including attributes, are kept.
     """
     upstream, destination = Path(upstream), Path(destination)
     site = _category_messages(upstream / "geosite.dat")
     ip = _category_messages(upstream / "geoip.dat")
-    counts = {code: sum(1 for _ in _records(message)) for code, message in site.items()}
+    counts, all_types, required_codes = {}, Counter(), {"cn"}
+    for code, message in site.items():
+        types = Counter()
+        for record in _records(message):
+            entry = {field: value for field, _, value in protobuf_fields(record)}
+            match_type = entry.get(1, 0)
+            if match_type not in SITE_TYPES:
+                raise ValueError("unknown GeoSite match type")
+            types[match_type] += 1
+        counts[code] = sum(types.values())
+        all_types.update(types)
+        if types[0] or types[1]:
+            required_codes.add(code)
     ip_total = sum(sum(1 for _ in _records(message)) for message in ip.values())
+    if target is None:
+        destination.mkdir(parents=True, exist_ok=False)
+        codes = {
+            "geosite_codes": sorted(site),
+            "geoip_codes": sorted(ip),
+        }
+        hashes = {}
+        for kind in ("geoip", "geosite"):
+            path = destination / f"{kind}.dat"
+            shutil.copyfile(upstream / path.name, path)
+            hashes[kind] = hashlib.sha256(path.read_bytes()).hexdigest()
+        stats = selection_statistics(destination, codes=codes)
+        result = {
+            "target_records": None,
+            "original_selected_records": ip_total + sum(counts.values()),
+            "synthetic_records": False,
+            "selection_policy": "complete byte-identical source DATs",
+            "production_record_limit": False,
+            "complete_geosite_codes": sorted(site),
+            "upstream_sha256": hashes,
+            "fixture_sha256": hashes.copy(),
+            "upstream_geosite_types": stats["geosite"]["type_names"],
+            "retained_geosite_types": stats["geosite"]["type_names"],
+            "missing_upstream_geosite_types": [
+                name
+                for name, count in stats["geosite"]["type_names"].items()
+                if not count
+            ],
+            "codes": codes,
+            "retained_records": {kind: row["entries"] for kind, row in stats.items()},
+            "retained_category_prefixes": {
+                kind: {row["code"]: row["entries"] for row in stats[kind]["categories"]}
+                for kind in ("geoip", "geosite")
+            },
+        }
+        save(destination / "selection.json", result)
+        return result
     site_budget = target - ip_total
-    if site_budget <= 0 or not counts["cn"]:
+    if site_budget <= 0 or not counts.get("cn"):
         raise ValueError("real GeoData cannot fill target while retaining GeoSite CN")
-    selected_sites = ["cn"]
-    preceding_records = 0
-    total = ip_total + counts["cn"]
+    quotas = {code: counts[code] for code in required_codes}
+    remaining = site_budget - sum(quotas.values())
+    if remaining < 0:
+        raise ValueError(
+            "GeoData target is too small for complete CN and Plain/Regex coverage"
+        )
     for code in sorted(counts, key=lambda code: (-counts[code], code)):
-        if total >= target:
+        if not remaining:
             break
-        if code != "cn":
-            # Select a workload that retains a CN witness under the same
-            # sorted-prefix policy; do not move CN ahead of earlier codes.
-            if code < "cn" and preceding_records + counts[code] >= site_budget:
-                continue
-            selected_sites.append(code)
-            if code < "cn":
-                preceding_records += counts[code]
-            total += counts[code]
-    if total < target or ip_total >= target:
+        if code not in quotas and counts[code]:
+            quotas[code] = min(remaining, counts[code])
+            remaining -= quotas[code]
+    if remaining:
         raise ValueError("real GeoData cannot fill target while retaining GeoSite CN")
     destination.mkdir(parents=True, exist_ok=False)
     remaining = target
     result = {
         "target_records": target,
-        "original_selected_records": total,
+        "original_selected_records": ip_total + sum(counts[code] for code in quotas),
         "synthetic_records": False,
+        "selection_policy": (
+            "all GeoIP; complete CN and all Plain/Regex categories; "
+            "largest remaining GeoSite category prefixes"
+        ),
+        "production_record_limit": False,
+        "complete_geosite_codes": sorted(required_codes),
+        "upstream_sha256": {
+            kind: hashlib.sha256((upstream / f"{kind}.dat").read_bytes()).hexdigest()
+            for kind in ("geoip", "geosite")
+        },
+        "upstream_geosite_types": {
+            name: all_types[number] for number, name in SITE_TYPES.items()
+        },
         "codes": {},
         "retained_records": {},
+        "retained_category_prefixes": {},
         "fixture_sha256": {},
     }
     for kind, categories, selected in (
         ("geoip", ip, sorted(ip)),
-        ("geosite", site, sorted(selected_sites)),
+        ("geosite", site, sorted(quotas)),
     ):
         output, retained = bytearray(), 0
+        prefixes = {}
         for code in selected:
             message = _field_bytes(1, code.encode("ascii"))
-            for record in _records(categories[code]):
-                if remaining:
-                    message.extend(_field_bytes(2, record))
-                    remaining -= 1
-                    retained += 1
+            quota = remaining if kind == "geoip" else quotas[code]
+            prefixes[code] = 0
+            for index, record in enumerate(_records(categories[code])):
+                if index >= quota:
+                    break
+                message.extend(_field_bytes(2, record))
+                remaining -= 1
+                retained += 1
+                prefixes[code] += 1
             output.extend(_field_bytes(1, message))
         path = destination / f"{kind}.dat"
         path.write_bytes(output)
         result["codes"][kind + "_codes"] = selected
         result["retained_records"][kind] = retained
+        result["retained_category_prefixes"][kind] = prefixes
         result["fixture_sha256"][kind] = hashlib.sha256(output).hexdigest()
     if remaining or not category_entries(destination / "geosite.dat"):
         raise ValueError(
             "stress fixture did not retain the requested records and CN witness"
         )
+    result["retained_geosite_types"] = selection_statistics(
+        destination, codes=result["codes"]
+    )["geosite"]["type_names"]
+    result["missing_upstream_geosite_types"] = [
+        name for name, count in result["upstream_geosite_types"].items() if not count
+    ]
     save(destination / "selection.json", result)
     return result
 

@@ -54,15 +54,18 @@ def source_mounts(source):
     return [(str(host), str(guest)) for guest, host in sorted(mounts.items())]
 
 
-def build(guest, root):
+def build(guest, root, *, geodata_update=False):
     root = Path(root)
+    features = "ffi,benchmark-geodata-http" if geodata_update else "ffi"
     guest.execute(
         [
             "/bin/sh",
             "-ec",
             "cd /src/cores/vcore; "
             "CARGO_TARGET_DIR=/run/benchmark/vcore-target "
-            "cargo build --locked --release --lib --features ffi; "
+            f"cargo build --locked --release --lib --features {features} "
+            "--message-format=json-render-diagnostics "
+            "> /run/benchmark/vcore-build-artifacts.jsonl; "
             "cc -O2 -Wall -Wextra -Werror -I /src/cores/vcore/include "
             "/src/benchmark/fixtures/vcore/launcher.c "
             "/run/benchmark/vcore-target/release/libvcore.a "
@@ -74,13 +77,14 @@ def build(guest, root):
     return {
         "binary_sha256": sha256(root / "artifacts/vcore"),
         "library_sha256": sha256(root / "vcore-target/release/libvcore.a"),
-        "build": "normal Release default protocol features plus production ffi",
+        "build": "normal Release default protocol features plus production ffi"
+        + (" and isolated benchmark-geodata-http" if geodata_update else ""),
         "launcher_sha256": sha256(FIXTURE_ROOT / "vcore/launcher.c"),
         "source_changes": False,
     }
 
 
-def configure(root, assets, witnesses, origins, dns, tun):
+def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=False):
     root, assets = Path(root), Path(assets)
     data = root / "data"
     geodata = data / "geodata"
@@ -88,8 +92,7 @@ def configure(root, assets, witnesses, origins, dns, tun):
     for name in ("geosite.dat", "geoip.dat"):
         # VCore deliberately rejects symlinked assets; keep real per-run files.
         shutil.copyfile(assets / name, geodata / name)
-    site_codes = witnesses.get("geosite_codes", ["cn"])
-    ip_codes = witnesses.get("geoip_codes", ["cn"])
+    nameserver = f"udp://{dns.ipv4}:24004#DIRECT"
     config = {
         "tun": {"enable": True},
         "ipv6": False,
@@ -106,18 +109,43 @@ def configure(root, assets, witnesses, origins, dns, tun):
         "dns": {
             "enable": True,
             "ipv6": False,
-            "nameserver": [f"udp://{dns.ipv4}:24004#DIRECT"],
+            "nameserver": [nameserver],
         },
         "rules": [
             "GEOSITE,cn,DIRECT",
-            *[f"GEOSITE,{code},DIRECT" for code in site_codes if code != "cn"],
             f"DOMAIN,{witnesses['domain_positive']},REJECT",
             "GEOIP,cn,REJECT",
-            *[f"GEOIP,{code},DIRECT,no-resolve" for code in ip_codes if code != "cn"],
             *[f"IP-CIDR,{row.ipv4}/32,DIRECT,no-resolve" for row in origins],
             "MATCH,blocked",
         ],
     }
+    if geodata_update:
+        config.update(
+            {
+                "geox-url": {
+                    kind: f"http://geodata.update.test:24006/{root.name}/{kind}.dat"
+                    for kind in ("geosite", "geoip")
+                },
+                "geo-auto-update": True,
+                "geo-update-interval": 24,
+            }
+        )
+        config["proxies"].append(
+            {
+                "name": "geodata-fixture",
+                "type": "socks5",
+                "server": origins[1].ipv4,
+                "port": 24005,
+            }
+        )
+        config["proxy-groups"].append(
+            {
+                "name": "geodata-update",
+                "type": "select",
+                "proxies": ["geodata-fixture"],
+            }
+        )
+        config["rules"][-1] = "MATCH,geodata-update"
     save(root / "config.json", config)
     requests = [
         {"apiVersion": 5, "method": "initialize", "payload": {"dataDir": str(data)}},
@@ -141,7 +169,8 @@ def configure(root, assets, witnesses, origins, dns, tun):
     )
     return {
         "config": root / "config.json",
-        "argv": [str(root / "artifacts/vcore"), str(request_path)],
+        "argv": [str(root / "artifacts/vcore"), str(request_path)]
+        + ([str(root / "geodata-state.jsonl")] if geodata_update else []),
         "pass_fds": (tun.fd,),
         "env": {},
         "differences": [
@@ -149,7 +178,16 @@ def configure(root, assets, witnesses, origins, dns, tun):
             "production lifecycle ABI and uses the same external PID observer.",
             "VCore requires an unused concrete node and a declared REJECT group; "
             "neither introduces an additional traffic path.",
-        ],
+        ]
+        + (
+            [
+                "Opt-in update stress uses an isolated HTTP/SOCKS5 fixture and "
+                "the normal streaming updater; no production TLS claim. Public "
+                "getGeoDataState is sampled every 100 ms in the measured core."
+            ]
+            if geodata_update
+            else []
+        ),
     }
 
 
