@@ -1,4 +1,4 @@
-"""One core-neutral entry point for matched native-TUN comparisons."""
+"""Explicit native-TUN comparisons and isolated protocol interoperability."""
 
 from __future__ import annotations
 
@@ -19,13 +19,23 @@ def main(argv=None):
         suite = unittest.defaultTestLoader.discover(str(BENCHMARK_ROOT / "tests"))
         result = unittest.TextTestRunner(verbosity=1).run(suite)
         return 0 if result.wasSuccessful() and result.testsRun else 1
+    stress = bool(values and values[0] == "stress")
+    if stress:
+        from .core_comparison import main as execute
+
+        values.pop(0)
+    elif values and values[0] == "interop":
+        from .interop.mihomo_interop import main as execute
+
+        values.pop(0)
+    else:
+        from .core_comparison import main as execute
     if values and values[0] == "compare":
         values.pop(0)
-    from .core_comparison import main as compare
 
     previous = signal.signal(signal.SIGTERM, _interrupt)
     try:
-        return compare(values)
+        return execute(values, stress=True) if stress else execute(values)
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, RuntimeError) as error:

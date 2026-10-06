@@ -88,6 +88,8 @@ def configure(root, assets, witnesses, origins, dns, tun):
     for name in ("geosite.dat", "geoip.dat"):
         # VCore deliberately rejects symlinked assets; keep real per-run files.
         shutil.copyfile(assets / name, geodata / name)
+    site_codes = witnesses.get("geosite_codes", ["cn"])
+    ip_codes = witnesses.get("geoip_codes", ["cn"])
     config = {
         "tun": {"enable": True},
         "ipv6": False,
@@ -108,8 +110,10 @@ def configure(root, assets, witnesses, origins, dns, tun):
         },
         "rules": [
             "GEOSITE,cn,DIRECT",
+            *[f"GEOSITE,{code},DIRECT" for code in site_codes if code != "cn"],
             f"DOMAIN,{witnesses['domain_positive']},REJECT",
             "GEOIP,cn,REJECT",
+            *[f"GEOIP,{code},DIRECT,no-resolve" for code in ip_codes if code != "cn"],
             *[f"IP-CIDR,{row.ipv4}/32,DIRECT,no-resolve" for row in origins],
             "MATCH,blocked",
         ],

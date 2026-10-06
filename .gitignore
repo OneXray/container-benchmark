@@ -1,7 +1,11 @@
-# Local experiment outputs (keep conclusions on disk, not in Git).
-/.work/
-/conclusions/
+# Shared downloads, build dependencies and daily update metadata.
 /.cache/
+
+# Per-run inputs, certificates, binaries and logs (including interop runs).
+/.work/
+
+# Local text evidence; publish only reviewed summaries in README.md.
+/conclusions/
 
 # Python environments, caches and coverage.
 .venv/
@@ -14,11 +18,13 @@ __pycache__/
 .coverage.*
 htmlcov/
 
-# Rust builds and Python packaging, including nested fixture projects.
-target/
-build/
-dist/
+# Packaging outputs are root-local; do not hide source directories named build/dist.
+/build/
+/dist/
 *.egg-info/
+
+# Cargo build directories; normal C/Go binaries are already covered by /.work/.
+target/
 
 # Local credentials and editor / OS temporary files.
 .env
@@ -26,6 +32,7 @@ dist/
 !.env.example
 !.env.template
 .DS_Store
+._*
 *.swp
 *.swo
 *~

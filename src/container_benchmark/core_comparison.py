@@ -14,24 +14,35 @@ from types import SimpleNamespace
 CORES = ("vcore", "mihomo")
 
 
-def parse_args(argv=None):
+def parse_args(argv=None, *, stress=False):
     parser = argparse.ArgumentParser(
-        prog="container-benchmark compare", description=__doc__
+        prog="container-benchmark " + ("stress" if stress else "compare"),
+        description=__doc__,
     )
-    parser.add_argument("--core", nargs="+", choices=CORES, default=list(CORES))
+    parser.add_argument(
+        "--core",
+        nargs="+",
+        choices=("vcore",) if stress else CORES,
+        default=["vcore"] if stress else list(CORES),
+    )
     parser.add_argument("--source", action="append", default=[], metavar="vcore=PATH")
     parser.add_argument(
         "--rates",
         nargs="+",
         type=int,
         choices=(1000, 1500, 2000),
-        default=[1000, 1500, 2000],
+        default=[2000] if stress else [1000, 1500, 2000],
     )
     parser.add_argument("--seconds", type=int, default=60)
+    if stress:
+        parser.add_argument("--geodata-records", type=int, default=1_280_000)
     args = parser.parse_args(argv)
     args.transport, args.dns_qps = "mixed", 1000
     if not 1 <= args.seconds <= 1800:
         parser.error("duration must be 1..1800 seconds")
+    if stress and args.geodata_records <= 0:
+        parser.error("GeoData record target must be positive")
+    args.stress = stress
     args.core, args.rates = (
         list(dict.fromkeys(args.core)),
         list(dict.fromkeys(args.rates)),
@@ -56,6 +67,20 @@ def _summary(root, report):
         + json.dumps(report, indent=2)
         + "\n```\n"
     )
+
+
+def _annotate_stress_memory(result):
+    # Use the final process observation, not a copy taken before the drain/close
+    # sampling completes. Missing/failed observations cannot pass the target.
+    measurement = result.get("measurement", {})
+    peak = measurement.get("peak_bytes")
+    for case in result.get("cases", []):
+        case["peak_bytes"] = peak
+        case["memory_target_met"] = (
+            measurement.get("status") == "PASS"
+            and isinstance(peak, int)
+            and 0 < peak < 50_000_000
+        )
 
 
 def _configure(core, root, assets, samples, origins, dns, tun):
@@ -95,7 +120,13 @@ def _guest_run(root, core):
     try:
         with fixture.RealTun() as tun:
             configured = _configure(
-                core, root, root / "rules/download-1", samples, origins, dns, tun
+                core,
+                root,
+                root / "rules" / request["assets_directory"],
+                samples,
+                origins,
+                dns,
+                tun,
             )
             report["differences"] = configured.get("differences", [])
             process = NativeProcess(
@@ -189,15 +220,23 @@ def _guest_run(root, core):
         save(root / "report.json", report)
 
 
-def main(argv=None):
-    parsed = parse_args(argv)
+def main(argv=None, *, stress=False):
+    parsed = parse_args(argv, stress=stress)
     from . import core_mihomo_adapter, core_vcore_adapter, workload
-    from .geodata import acquire, contains_ip, selection_statistics, witnesses
+    from .geodata import (
+        acquire,
+        contains_ip,
+        prepare_stress_assets,
+        selection_statistics,
+        witnesses,
+    )
     from .inputs import save, sha256, source_identity
     from .linux_builder import LinuxGuest, build_traffic, builder_inputs, install_tools
     from .session import Session
 
-    with Session(["compare", *(argv or [])], sources=parsed.sources) as session:
+    with Session(
+        ["stress" if stress else "compare", *(argv or [])], sources=parsed.sources
+    ) as session:
         root = session.work / "comparison"
         root.mkdir()
         report = {
@@ -232,8 +271,19 @@ def main(argv=None):
                 raise ValueError("unset inherited measurement/build overrides")
             acquired = acquire(root / "rules")
             assets = root / "rules" / acquired["directory"]
+            stress_selection = None
+            if stress:
+                stress_selection = prepare_stress_assets(
+                    assets, root / "rules/stress", parsed.geodata_records
+                )
+                assets = root / "rules/stress"
             samples = witnesses(assets)
-            report["geodata"] = selection_statistics(assets) | {"assets": acquired}
+            if stress_selection is not None:
+                samples.update(stress_selection["codes"])
+                report["inputs"]["memory_target_bytes"] = 50_000_000
+            report["geodata"] = selection_statistics(
+                assets, codes=stress_selection["codes"] if stress_selection else None
+            ) | {"assets": acquired, "stress_selection": stress_selection}
             report["inputs"]["go"] = build_traffic(root)
             report["inputs"]["traffic_sha256"] = sha256(
                 root / "artifacts/traffic-linux"
@@ -307,6 +357,9 @@ def main(argv=None):
                                     "origins": [{"ipv4": row.ipv4} for row in origins],
                                     "dns": {"ipv4": dns.ipv4},
                                     "source": guest.ipv4,
+                                    "assets_directory": assets.relative_to(
+                                        root / "rules"
+                                    ).as_posix(),
                                 },
                             )
                             save(job / "report.json", {"status": "ERROR", "cases": []})
@@ -326,6 +379,8 @@ def main(argv=None):
                             except Exception as error:
                                 print(f"{core} {rate}: {error}", flush=True)
                             result = json.loads((job / "report.json").read_text())
+                            if stress:
+                                _annotate_stress_memory(result)
                             result["environment"] = guest.record
                             report["runs"][job.name] = result
                             _summary(root, report)

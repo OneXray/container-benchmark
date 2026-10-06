@@ -138,10 +138,16 @@ def contains_ip(assets, address):
     )
 
 
-def selection_statistics(assets):
+def selection_statistics(assets, *, codes=None):
     result = {}
     for kind in ("geosite", "geoip"):
-        entries = category_entries(Path(assets) / f"{kind}.dat")
+        selected_codes = codes[kind + "_codes"] if codes is not None else ["cn"]
+        categories = _category_messages(Path(assets) / f"{kind}.dat")
+        entries = [
+            {field: value for field, _, value in protobuf_fields(record)}
+            for code in selected_codes
+            for record in _records(categories[code])
+        ]
         kinds, unique, value_bytes = Counter(), set(), 0
         for entry in entries:
             if kind == "geosite":
@@ -162,13 +168,121 @@ def selection_statistics(assets):
             "unique_entries": len(unique),
             "categories": [
                 {
-                    "code": "cn",
-                    "entries": len(entries),
-                    "value_bytes": value_bytes,
-                    "types": dict(kinds),
+                    "code": code,
+                    "entries": sum(1 for _ in _records(categories[code])),
                 }
+                for code in selected_codes
             ],
+            "value_bytes": value_bytes,
+            "types": dict(kinds),
         }
+    return result
+
+
+def _category_messages(path):
+    categories = {}
+    for field, wire, message in protobuf_fields(Path(path).read_bytes()):
+        if (field, wire) != (1, 2):
+            raise ValueError("invalid GeoData list framing")
+        codes = [
+            bytes(value).decode("ascii").lower()
+            for number, kind, value in protobuf_fields(message)
+            if (number, kind) == (1, 2)
+        ]
+        if len(codes) != 1 or codes[0] in categories:
+            raise ValueError("invalid or duplicate GeoData category")
+        categories[codes[0]] = message
+    return categories
+
+
+def _records(message):
+    for field, wire, value in protobuf_fields(message):
+        if (field, wire) == (2, 2):
+            yield value
+
+
+def _varint(value):
+    result = bytearray()
+    while value >= 128:
+        result.append((value & 127) | 128)
+        value >>= 7
+    result.append(value)
+    return result
+
+
+def _field_bytes(field, value):
+    result = _varint(field * 8 + 2)
+    result.extend(_varint(len(value)))
+    result.extend(value)
+    return result
+
+
+def prepare_stress_assets(upstream, destination, target):
+    """Keep an exact real-record workload, with GeoIP priority, outside comparison.
+
+    Linux deliberately has no mobile cap: make the retained fixture explicit
+    instead of changing the production build or inventing duplicate records.
+    Preserve record payloads from the frozen upstream DATs, trimming only the
+    final selected category prefix. Cache/download originals remain untouched.
+    """
+    upstream, destination = Path(upstream), Path(destination)
+    site = _category_messages(upstream / "geosite.dat")
+    ip = _category_messages(upstream / "geoip.dat")
+    counts = {code: sum(1 for _ in _records(message)) for code, message in site.items()}
+    ip_total = sum(sum(1 for _ in _records(message)) for message in ip.values())
+    site_budget = target - ip_total
+    if site_budget <= 0 or not counts["cn"]:
+        raise ValueError("real GeoData cannot fill target while retaining GeoSite CN")
+    selected_sites = ["cn"]
+    preceding_records = 0
+    total = ip_total + counts["cn"]
+    for code in sorted(counts, key=lambda code: (-counts[code], code)):
+        if total >= target:
+            break
+        if code != "cn":
+            # Select a workload that retains a CN witness under the same
+            # sorted-prefix policy; do not move CN ahead of earlier codes.
+            if code < "cn" and preceding_records + counts[code] >= site_budget:
+                continue
+            selected_sites.append(code)
+            if code < "cn":
+                preceding_records += counts[code]
+            total += counts[code]
+    if total < target or ip_total >= target:
+        raise ValueError("real GeoData cannot fill target while retaining GeoSite CN")
+    destination.mkdir(parents=True, exist_ok=False)
+    remaining = target
+    result = {
+        "target_records": target,
+        "original_selected_records": total,
+        "synthetic_records": False,
+        "codes": {},
+        "retained_records": {},
+        "fixture_sha256": {},
+    }
+    for kind, categories, selected in (
+        ("geoip", ip, sorted(ip)),
+        ("geosite", site, sorted(selected_sites)),
+    ):
+        output, retained = bytearray(), 0
+        for code in selected:
+            message = _field_bytes(1, code.encode("ascii"))
+            for record in _records(categories[code]):
+                if remaining:
+                    message.extend(_field_bytes(2, record))
+                    remaining -= 1
+                    retained += 1
+            output.extend(_field_bytes(1, message))
+        path = destination / f"{kind}.dat"
+        path.write_bytes(output)
+        result["codes"][kind + "_codes"] = selected
+        result["retained_records"][kind] = retained
+        result["fixture_sha256"][kind] = hashlib.sha256(output).hexdigest()
+    if remaining or not category_entries(destination / "geosite.dat"):
+        raise ValueError(
+            "stress fixture did not retain the requested records and CN witness"
+        )
+    save(destination / "selection.json", result)
     return result
 
 

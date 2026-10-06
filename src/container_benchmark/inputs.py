@@ -59,6 +59,9 @@ def source_identity(source: Path) -> dict:
             "commit": git("rev-parse", "HEAD").decode().strip(),
             "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
             "dirty": bool(git("status", "--porcelain")),
+            "working_diff_sha256": hashlib.sha256(
+                git("diff", "--binary", "HEAD")
+            ).hexdigest(),
         }
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError("explicit source must be a readable Git checkout") from error

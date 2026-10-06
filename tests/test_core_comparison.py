@@ -55,6 +55,39 @@ class ComparisonTests(unittest.TestCase):
             ):
                 comparison.parse_args(["--core", core])
 
+    def test_stress_is_explicit_vcore_mixed_load_without_changing_comparison(self):
+        with tempfile.TemporaryDirectory() as source:
+            args = comparison.parse_args(["--source", "vcore=" + source], stress=True)
+            self.assertEqual(args.core, ["vcore"])
+            self.assertEqual(args.rates, [2000])
+            self.assertEqual(args.geodata_records, 1_280_000)
+            self.assertEqual(
+                (args.seconds, args.dns_qps, args.transport), (60, 1000, "mixed")
+            )
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                comparison.parse_args(
+                    ["--source", "vcore=" + source, "--geodata-records", "4"]
+                )
+
+    def test_stress_memory_gate_uses_final_process_peak_and_valid_observation(self):
+        for status, peak, expected in (
+            ("PASS", 51_000_000, False),
+            ("PASS", 49_000_000, True),
+            ("PASS", 0, False),
+            ("ERROR", 40_000_000, False),
+        ):
+            with self.subTest(status=status, peak=peak):
+                report = {
+                    "measurement": {"status": status, "peak_bytes": peak},
+                    "cases": [{"peak_bytes": 30_000_000}],
+                }
+                comparison._annotate_stress_memory(report)
+                self.assertEqual(report["cases"][0]["peak_bytes"], peak)
+                self.assertEqual(report["cases"][0]["memory_target_met"], expected)
+
 
 if __name__ == "__main__":
     unittest.main()

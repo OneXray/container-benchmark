@@ -1,9 +1,11 @@
-# VCore / Mihomo TUN benchmark
+# VCore tests and TUN benchmark
 
-仅比较 **VCore 与 Mihomo** 的原生 TUN：实际带宽、CPU、Linux RSS 观测峰值、UDP 丢包率。
+本工程托管 VCore 的隔离协议互通、GeoData 内存压力与 **VCore / Mihomo** 原生 TUN 横向比较。
+VCore 仓库的脚本只负责编译；这里通过显式源码路径使用其生产 ABI。
+横向比较观察实际带宽、CPU、Linux RSS 观测峰值、UDP 丢包率。
 两者复用同一 Go 流量客户端、网络设施、外部 PID 采样器与统计代码；适配层只负责正常构建、配置和启动。
 
-## 固定环境与负载
+## 横向比较的固定环境与负载
 
 - Apple Silicon macOS + Apple 官方 `container`；每个自有容器 **5 CPU / 8 GiB**。
 - 构建、被测内核、两个隔离原站使用同一官方最新 **Ubuntu LTS digest**，通过 NAT 连接。
@@ -21,6 +23,15 @@
 ## 运行
 
 ```sh
+# 隔离协议互通；--list 可离线使用，不需要源码或容器
+uv run --locked container-benchmark interop --list
+uv run --locked container-benchmark interop --source vcore=/absolute/path/to/VCore
+
+# VCore 单核内存压力；默认 128 万原始 GeoData 记录、2 Gbps、60 秒、1000 QPS DNS
+uv run --locked container-benchmark stress \
+  --source vcore=/absolute/path/to/VCore --geodata-records 1280000
+
+# 完整 CN 双核横向比较，与大容量压力场景分开
 uv run --locked container-benchmark compare \
   --source vcore=/absolute/path/to/VCore
 
@@ -34,6 +45,52 @@ uv run --locked python maintenance/verify_go_fixtures.py
 默认比较两款内核，`--core` 仅接受 `vcore` / `mihomo`。
 VCore 通过 `--source vcore=PATH` 提供正常 Release checkout；Mihomo 始终下载官方最新稳定二进制，不本地编译。
 可用 `--rates` 选择档位、`--seconds` 缩短测试；公共设施不假设项目目录关系。
+
+### 协议互通
+
+保留 64 个代表用例，优先 Mihomo listener；其不支持的字段由官方 Xray-core、
+Hysteria2、V2Ray 与 Caddy 补验，`--backend` / `--protocol` 可筛选。
+所有服务端和消费者都在隔离容器中，使用 5 CPU / 8 GiB、最新 Ubuntu LTS 与 NAT；
+失败不回退宿主。2026-10-06 迁移后已通过一次 Mihomo SOCKS5 TCP/UDP 短测：
+TCP 双向各 1,024 bytes、UDP 双向各两包（64 / 1,200 bytes），核对原站所见来源与
+正常 Stop，容器和临时产物已清理。完整 64 用例矩阵本次未重跑，离线验证不能代替它。
+互通模块、fixture 和离线回归原属 VCore，保留其 [MIT 许可](src/container_benchmark/interop/LICENSE)。
+
+### 128 万 GeoData 内存压力
+
+使用同一官方增强 DAT 的真实记录，不复制或伪造记录凑数。先选取 GeoIP，再从
+GeoSite 大分类中保留前缀，使实际引用的原始 CIDR + Domain 总量恰为指定值。
+按归一 code 排序截取分类内原始前缀；输入原件不改动，派生 fixture 的 hash、
+分类与数量写入文字结论。DNS 与 TUN 分流见证来自保留的 CN 前缀。
+
+该场景与完整 CN 的横向比较分开，默认仅运行 VCore，仍使用 64 流、2 Gbps、
+1000 QPS DNS、60 秒，观察整个启动/负载/排空期间的内核进程 RSS 峰值，
+单独记录是否低于 50,000,000 bytes。Linux 不启用 iOS/tvOS 的数量截断，
+因此由明确派生的规则 fixture 提供相同总量；结果不是 Apple physical footprint
+或移动平台截断路径的真机验收。
+
+2026-10-06（Asia/Shanghai）已执行一次正式 60 秒压力测试。VCore 为
+`71445c28` 加本轮未提交修改，源码 diff SHA256 为
+`9044ee6a8c31fce4d78e5f2b7da8f8b6007a8467511373e07d35a94a6b128077`。
+使用增强 DAT `202610042206`：260 类 GeoIP 共 **1,054,987** 条，GeoSite
+`category-ads-all` **187,402** 条 + `cn` **37,611** 条，共 **225,013** 条，
+原始记录总计 **1,280,000**。GeoIP 优先后 CN 仅保留前缀，本轮 Site 包含 Domain/Full，
+不覆盖 Plain/Regex 或复杂正则的最坏内存。
+
+| 指标 | 2 Gbps / 60 秒 / 1,000 QPS DNS |
+| --- | --- |
+| 实际带宽 | 1,989.45 Mbps |
+| CPU | 146.93%（100% = 一个逻辑核） |
+| Linux RSS 峰值 | **42,557,440 bytes / 40.59 MiB**，低于 50,000,000 bytes |
+| UDP 丢包 | 2,513 / 6,249,984 包，**0.0402%**；上行 2,069，下行 444 |
+| DNS | 计划 60,000，发送 59,998，成功 59,912；timeout 86、skipped 2 |
+
+该轮满足既有 99% 吞吐/DNS 负载判定与 RSS 目标，但仍有 UDP 未完整交付和 DNS 超时，
+**不是零丢包或全部成功验收**。观测器无采样错误，正常退出，本轮容器和 scratch
+已清理；原始脱敏文字结论仅在本机忽略目录中保留。结果不保证其他分类组合、
+正则复杂度、资产更新叠加或 Apple 真机内存。
+
+### 横向比较的适配差异
 
 | 内核 | 原生入口 / GeoData |
 | --- | --- |
