@@ -49,8 +49,9 @@ class NativeProcess:
 
     Callers own TUN/configuration and use sample()/boundary() for scene deltas.
     Never call child.poll()/wait(), which would discard wait4's resource usage.
-    Procfs observations cover post-exec startup through workload drain; the
-    sampler stops before shutdown. RSS is a metric, not an acceptance gate.
+    Procfs observations cover post-exec startup, workload and graceful shutdown.
+    The close owner samples during reap after joining the background sampler.
+    RSS is a metric, not an acceptance gate; brief exit races remain unobservable.
     """
 
     def __init__(self, argv, work, *, pass_fds=(), env=None):
@@ -75,7 +76,7 @@ class NativeProcess:
             "peak_bytes": 0,
             "peak_sources": ["proc_vm_hwm", "proc_vm_rss"],
             "proc_vm_hwm_peak_bytes": 0,
-            "observation_window": "post_exec_through_workload_drain",
+            "observation_window": "post_exec_through_shutdown_reap",
             "shutdown_observed": False,
             "cleanup": False,
             "forced_signals": [],
@@ -216,6 +217,17 @@ class NativeProcess:
         while True:
             if self._reap_once():
                 return True
+            try:
+                self.sample()
+                self.record["shutdown_observed"] = True
+            except (OSError, ValueError, RuntimeError) as error:
+                # Exit between wait4 and procfs is expected. Other sampling
+                # failures remain visible and cannot pass the observer gate.
+                if self._reap_once():
+                    return True
+                self.record["sampling_errors"].append(
+                    f"shutdown sample: {type(error).__name__}: {error}"
+                )
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.01)
@@ -234,6 +246,7 @@ class NativeProcess:
             if self._reap_once():
                 self.record["exited_before_close"] = True
             else:
+                self.stage = "shutdown"
                 self._signal(signal.SIGINT)
                 self.record["sigint_requested"] = True
                 if not self._reap_for(5):

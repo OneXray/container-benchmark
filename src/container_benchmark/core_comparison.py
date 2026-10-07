@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 CORES = ("vcore", "mihomo")
+QUEUE_LENGTH = 4096
 
 
 def parse_args(argv=None, *, stress=False):
@@ -126,6 +127,7 @@ def _guest_run(root, core):
     spec.loader.exec_module(fixture)
     try:
         with fixture.RealTun() as tun:
+            tun.configure_queue_lengths(QUEUE_LENGTH)
             configured = _configure(
                 core,
                 root,
@@ -137,6 +139,7 @@ def _guest_run(root, core):
                 geodata_update=getattr(args, "geodata_update", False),
             )
             report["differences"] = configured.get("differences", [])
+            before_host = tun.record_host_state()
             process = NativeProcess(
                 configured["argv"],
                 root / "process",
@@ -247,6 +250,14 @@ def _guest_run(root, core):
                     time.sleep(1)
             finally:
                 process.close()
+                for case in report["cases"]:
+                    case["peak_bytes"] = process.record["peak_bytes"]
+                after_host = tun.record_host_state()
+                report["host_tun_preserved"] = after_host == before_host
+                if not report["host_tun_preserved"]:
+                    raise RuntimeError(
+                        "core changed its host-owned TUN/eth0 profile or TUN fd flags"
+                    )
                 report["tun"] = tun.record
             report["status"] = (
                 "MEASURED" if process.record["status"] == "PASS" else "ERROR"
@@ -292,7 +303,10 @@ def main(argv=None, *, stress=False):
                 "cpus": 5,
                 "memory_bytes": 8 * 1024**3,
                 "network": "NAT",
-                "queue_overrides": False,
+                "queue_overrides": {
+                    "tun0_txqueuelen": QUEUE_LENGTH,
+                    "eth0_txqueuelen": QUEUE_LENGTH,
+                },
                 "geodata_update": getattr(parsed, "geodata_update", False),
             },
             "identities": {},

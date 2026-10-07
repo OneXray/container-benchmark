@@ -91,8 +91,59 @@ class NativeProcessTests(unittest.TestCase):
             self.assertEqual(result["peak_bytes"], 33554432)
             self.assertEqual(result["peak_sources"], ["proc_vm_hwm", "proc_vm_rss"])
             self.assertEqual(
-                result["observation_window"], "post_exec_through_workload_drain"
+                result["observation_window"], "post_exec_through_shutdown_reap"
             )
+            self.assertFalse(result["shutdown_observed"])
+
+    def test_graceful_shutdown_observes_a_later_hwm_before_reap(self):
+        with self.observed_process(hwm_kib=32768, rss_kib=16384, wait4_kib=262144) as (
+            process,
+            counters,
+        ):
+
+            def stop(_):
+                counters.update(hwm=49152, rss=49152)
+
+            usage = SimpleNamespace(ru_maxrss=262144, ru_utime=0.1, ru_stime=0.2)
+            with (
+                patch.object(process, "_signal", side_effect=stop),
+                patch(
+                    "container_benchmark.native_process.os.wait4",
+                    side_effect=[
+                        (0, 0, usage),
+                        (0, 0, usage),
+                        (process.child.pid, 0, usage),
+                    ],
+                ),
+            ):
+                result = process.close()
+            self.assertTrue(result["shutdown_observed"])
+            self.assertTrue(result["sigint_requested"])
+            self.assertEqual(result["peak_bytes"], 49152 * 1024)
+            self.assertEqual(result["sampling_errors"], [])
+
+    def test_expected_procfs_disappearance_at_exit_is_not_sampling_failure(self):
+        with self.observed_process(hwm_kib=32768, rss_kib=16384, wait4_kib=32768) as (
+            process,
+            _,
+        ):
+            usage = SimpleNamespace(ru_maxrss=32768, ru_utime=0.1, ru_stime=0.2)
+            with (
+                patch.object(process, "_signal"),
+                patch.object(
+                    process, "sample", side_effect=FileNotFoundError("exited")
+                ),
+                patch(
+                    "container_benchmark.native_process.os.wait4",
+                    side_effect=[
+                        (0, 0, usage),
+                        (0, 0, usage),
+                        (process.child.pid, 0, usage),
+                    ],
+                ),
+            ):
+                result = process.close()
+            self.assertEqual(result["sampling_errors"], [])
             self.assertFalse(result["shutdown_observed"])
 
     def test_log_bound_keeps_draining_without_stopping_the_core(self):

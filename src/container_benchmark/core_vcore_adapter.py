@@ -77,6 +77,8 @@ def build(guest, root, *, geodata_update=False):
     return {
         "binary_sha256": sha256(root / "artifacts/vcore"),
         "library_sha256": sha256(root / "vcore-target/release/libvcore.a"),
+        "library_format": "staticlib",
+        "library_name": "libvcore.a",
         "build": "normal Release default protocol features plus production ffi"
         + (" and isolated benchmark-geodata-http" if geodata_update else ""),
         "launcher_sha256": sha256(FIXTURE_ROOT / "vcore/launcher.c"),

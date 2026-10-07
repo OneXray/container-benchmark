@@ -1,14 +1,123 @@
-"""Core-neutral input and default-environment regression checks."""
+"""Core-neutral input and matched-environment regression checks."""
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 from container_benchmark import core_comparison as comparison
+from container_benchmark import core_vcore_adapter, native_process, workload
 
 
 class ComparisonTests(unittest.TestCase):
+    def _guest_report(self, core, after_queue_length=4096):
+        events = []
+        tun = MagicMock()
+        tun.__enter__.return_value = tun
+        tun.__exit__.return_value = False
+        tun.configure_queue_lengths.side_effect = lambda length: events.append(
+            ("queues", length)
+        )
+        tun.record = {"tx_queue_len": 4096, "eth0_tx_queue_len": after_queue_length}
+        states = [
+            {"tx_queue_len": 4096, "eth0_tx_queue_len": 4096},
+            dict(tun.record),
+        ]
+
+        def observe():
+            events.append("observe")
+            return states.pop(0)
+
+        tun.record_host_state.side_effect = observe
+
+        def configure(*args, **kwargs):
+            events.append("configure")
+            return {"argv": ["core"]}
+
+        process = Mock()
+        process.record = {"status": "PASS", "peak_bytes": 12345}
+        process.boundary.side_effect = [
+            {"user_ns": 0, "system_ns": 0},
+            {"user_ns": 1_000_000, "system_ns": 0},
+        ]
+        process.close.side_effect = lambda: events.append("close")
+
+        def start(*args, **kwargs):
+            events.append("process")
+            return process
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "request.json").write_text(
+                json.dumps(
+                    {
+                        "args": {
+                            "transport": "mixed",
+                            "mbps": 1000,
+                            "seconds": 60,
+                            "flows": 64,
+                            "dns_qps": 1000,
+                        },
+                        "witnesses": {"ip_positive": {"4": "192.0.2.1"}},
+                        "origins": [],
+                        "dns": {},
+                        "source": "source",
+                        "assets_directory": "frozen",
+                    }
+                )
+            )
+            (root / "mixed").mkdir()
+            (root / "mixed/start").touch()
+            with (
+                patch.object(
+                    comparison.importlib.util,
+                    "spec_from_file_location",
+                    return_value=SimpleNamespace(loader=Mock()),
+                ),
+                patch.object(
+                    comparison.importlib.util,
+                    "module_from_spec",
+                    return_value=SimpleNamespace(RealTun=Mock(return_value=tun)),
+                ),
+                patch.object(comparison, "_configure", side_effect=configure),
+                patch.object(native_process, "NativeProcess", side_effect=start),
+                patch.object(core_vcore_adapter, "wait_ready"),
+                patch.object(comparison.time, "sleep"),
+                patch.object(workload, "run", return_value=([{"complete": True}], {})),
+                patch.object(workload, "summarize", return_value={}),
+                patch.object(workload, "directional_packets", return_value={}),
+            ):
+                if after_queue_length == 4096:
+                    comparison._guest_run(root, core)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "host-owned TUN/eth0"):
+                        comparison._guest_run(root, core)
+            return json.loads((root / "report.json").read_text()), events, tun
+
+    def test_both_cores_share_verified_queue_setup_before_configuration_and_start(self):
+        for core in comparison.CORES:
+            with self.subTest(core=core):
+                report, events, tun = self._guest_report(core)
+                tun.configure_queue_lengths.assert_called_once_with(4096)
+                self.assertEqual(
+                    events[:4], [("queues", 4096), "configure", "observe", "process"]
+                )
+                self.assertEqual(events[-2:], ["close", "observe"])
+                self.assertEqual(report["status"], "MEASURED")
+                self.assertTrue(report["host_tun_preserved"])
+
+    def test_both_cores_fail_when_actual_queue_changes_after_start(self):
+        for core in comparison.CORES:
+            with self.subTest(core=core):
+                report, events, _ = self._guest_report(core, after_queue_length=1024)
+                self.assertEqual(events[-2:], ["close", "observe"])
+                self.assertEqual(report["status"], "ERROR")
+                self.assertFalse(report["host_tun_preserved"])
+
     def test_fixed_workload_and_generic_source_interface(self):
         args = comparison.parse_args(["--core", "mihomo"])
         self.assertEqual(args.rates, [1000, 1500, 2000])

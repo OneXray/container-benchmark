@@ -167,6 +167,7 @@ class RealTun:
         self._client("route", "replace", "default", "dev", "tun0")
         self._client("-6", "route", "replace", "default", "dev", "tun0")
         self._record_link()
+        self.record_host_state()
 
     def _configure_flags(self):
         # One raw-IP queue, without virtio headers or framing extensions.
@@ -183,26 +184,58 @@ class RealTun:
             iff_flags_actual=actual,
         )
 
-    def _link_info(self):
+    def record_host_state(self):
+        """Observe shared fd/profile without writing them during the session."""
+        self.record["fd_status_flags"] = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        self.record["fd_descriptor_flags"] = fcntl.fcntl(self.fd, fcntl.F_GETFD)
+        observed = fcntl.ioctl(self.fd, TUNGETIFF, bytes(40))
+        self.record["iff_flags_actual"] = struct.unpack_from("H", observed, 16)[0]
+        row = self._link_info()
+        if type(row.get("mtu")) is not int or row["mtu"] != 1500:
+            raise RuntimeError("owned TUN actual MTU differs from 1500")
+        self._record_link(row)
+        if "queue_length_requested" in self.record:
+            self.record["eth0_tx_queue_len"] = self._link_info(host=True)["txqlen"]
+        self.record["observed_mtu"] = row["mtu"]
+        return dict(self.record)
+
+    def configure_queue_lengths(self, length):
+        """Apply and verify one shared queue profile before starting the core."""
+        if type(length) is not int or length <= 0:
+            raise ValueError("owned queue length must be a positive integer")
+        self._client("link", "set", "dev", self.device, "txqueuelen", str(length))
+        command("ip", "link", "set", "dev", "eth0", "txqueuelen", str(length))
+        tun_row = self._link_info()
+        eth0_row = self._link_info(host=True)
+        if tun_row["txqlen"] != length or eth0_row["txqlen"] != length:
+            raise RuntimeError("owned TUN/eth0 queue lengths differ from request")
+        self._record_link(tun_row)
+        self.record["eth0_tx_queue_len"] = eth0_row["txqlen"]
+        self.record["queue_length_requested"] = length
+
+    def _link_info(self, *, host=False):
+        device = "eth0" if host else self.device
+        argv = ["ip"] if host else ["ip", "-n", self.name]
         rows = json.loads(
             subprocess.check_output(
-                ["ip", "-n", self.name, "-j", "link", "show", "dev", "tun0"],
+                [*argv, "-j", "link", "show", "dev", device],
                 text=True,
                 timeout=15,
             )
         )
         if not isinstance(rows, list) or len(rows) != 1:
-            raise RuntimeError("owned TUN link metadata unavailable")
+            raise RuntimeError(f"owned {device} link metadata unavailable")
         row = rows[0]
         if not isinstance(row, dict) or type(row.get("txqlen")) is not int:
-            raise RuntimeError("owned TUN queue length unavailable")
+            raise RuntimeError(f"owned {device} queue length unavailable")
         if row["txqlen"] <= 0:
-            raise RuntimeError("owned TUN queue length invalid")
+            raise RuntimeError(f"owned {device} queue length invalid")
         return row
 
-    def _record_link(self):
-        # Observe the kernel defaults without changing queue length or qdisc.
-        row = self._link_info()
+    def _record_link(self, row=None):
+        # Observe the actual queue length and qdisc without changing either.
+        if row is None:
+            row = self._link_info()
         self.record["tx_queue_len"] = row["txqlen"]
         kind = row.get("qdisc")
         self.record["qdisc"] = (
