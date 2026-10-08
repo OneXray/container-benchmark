@@ -202,7 +202,7 @@ func RunDNSPressure(config DNSPressureConfig, packets DNSPacketIO, now func() ti
 	start := now()
 	end, tailEnd := start.Add(time.Duration(config.Seconds)*time.Second), start.Add(time.Duration(config.Seconds)*time.Second+dnsQueryTimeout)
 	// Full history is bounded by the configured 1,800-second/10k-QPS workload;
-	// pending packets are bounded separately, independent of VCore limits.
+	// pending packets are bounded separately, independent of Vole limits.
 	states := make([]byte, out.Scheduled)
 	pending := make(map[uint16]*list.Element, dnsMaxPending)
 	order := list.New()

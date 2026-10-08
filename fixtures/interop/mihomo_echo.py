@@ -1,4 +1,4 @@
-"""Independent TCP/UDP payload and peer-source oracle, in an owned VCore container."""
+"""Independent TCP/UDP payload and peer-source oracle, in an owned Vole container."""
 
 import http.server
 import json
@@ -120,7 +120,7 @@ def cover():
 
 
 def main():
-    if sys.platform != "linux" or os.environ.get("VCORE_INTEROP_ISOLATED") != "1":
+    if sys.platform != "linux" or os.environ.get("VOLE_INTEROP_ISOLATED") != "1":
         raise RuntimeError("owned Linux origin required")
     with (
         socketserver.ThreadingTCPServer(("0.0.0.0", PORT), TCP) as tcp,

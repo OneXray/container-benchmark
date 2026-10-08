@@ -1,4 +1,4 @@
-"""Normal VCore foreground CLI adapter for the common native-TUN workload."""
+"""Normal Vole foreground CLI adapter for the common native-TUN workload."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def source_mounts(source):
                 ).strip()
             ).resolve(strict=True)
             destination = PurePosixPath(
-                os.path.normpath("/src/cores/vcore/" + dependency["path"])
+                os.path.normpath("/src/cores/vole/" + dependency["path"])
             )
             for _ in package.relative_to(repository).parts:
                 destination = destination.parent
@@ -39,7 +39,7 @@ def source_mounts(source):
                 "/",
                 "/src",
                 "/src/cores",
-                "/src/cores/vcore",
+                "/src/cores/vole",
                 "/src/benchmark",
             ):
                 raise ValueError(
@@ -59,27 +59,27 @@ def build(guest, root, *, geodata_update=False):
         [
             "/bin/sh",
             "-ec",
-            "cd /src/cores/vcore; "
-            "CARGO_TARGET_DIR=/run/benchmark/vcore-target "
+            "cd /src/cores/vole; "
+            "CARGO_TARGET_DIR=/run/benchmark/vole-target "
             "cargo build --locked --release --no-default-features "
-            "--features cli --lib --bin vcore "
+            "--features cli --lib --bin vole "
             "--message-format=json-render-diagnostics "
-            "> /run/benchmark/vcore-build-artifacts.jsonl; "
-            "cp /run/benchmark/vcore-target/release/vcore "
-            "/run/benchmark/artifacts/vcore",
+            "> /run/benchmark/vole-build-artifacts.jsonl; "
+            "cp /run/benchmark/vole-target/release/vole "
+            "/run/benchmark/artifacts/vole",
         ],
-        root / "vcore-build.log",
+        root / "vole-build.log",
         timeout=4000,
     )
     guest.execute(
-        ["/run/benchmark/artifacts/vcore", "-v"],
-        root / "vcore-version.log",
+        ["/run/benchmark/artifacts/vole", "-v"],
+        root / "vole-version.log",
         timeout=30,
     )
-    source = Path(guest.sources["vcore"])
+    source = Path(guest.sources["vole"])
     package = tomllib.loads((source / "Cargo.toml").read_text())["package"]
-    expected = f"VCore;engine=rust;coreVersion={package['version']}"
-    binary = root / "artifacts/vcore"
+    expected = f"Vole;engine=rust;coreVersion={package['version']}"
+    binary = root / "artifacts/vole"
     with binary.open("rb") as stream:
         header = stream.read(20)
     if (
@@ -87,19 +87,19 @@ def build(guest, root, *, geodata_update=False):
         or header[:6] != b"\x7fELF\x02\x01"
         or int.from_bytes(header[18:20], "little") != 183
     ):
-        raise ValueError("VCore DUT must be a native Linux arm64 ELF executable")
-    version = (root / "vcore-version.log").read_text().strip()
+        raise ValueError("Vole DUT must be a native Linux arm64 ELF executable")
+    version = (root / "vole-version.log").read_text().strip()
     if expected not in version or expected.encode() not in binary.read_bytes():
-        raise ValueError("VCore CLI build identity does not match the selected source")
+        raise ValueError("Vole CLI build identity does not match the selected source")
     return {
         "binary_sha256": sha256(binary),
         "binary_format": "ELF64 little-endian aarch64",
         "build_identity": expected,
         "runtime_version": version,
         "lockfile_sha256": sha256(source / "Cargo.lock"),
-        "library_sha256": sha256(root / "vcore-target/release/libvcore.rlib"),
+        "library_sha256": sha256(root / "vole-target/release/libvole.rlib"),
         "library_format": "rlib",
-        "library_name": "libvcore.rlib",
+        "library_name": "libvole.rlib",
         "library_use": "builder-only offline GeoData probe; not the measured process",
         "build": "locked Release production cli features; no FFI or interop features",
         "source_changes": False,
@@ -114,7 +114,7 @@ def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=Fals
     geodata = data / "geodata"
     geodata.mkdir(parents=True)
     for name in ("geosite.dat", "geoip.dat"):
-        # VCore deliberately rejects symlinked assets; keep real per-run files.
+        # Vole deliberately rejects symlinked assets; keep real per-run files.
         shutil.copyfile(assets / name, geodata / name)
     nameserver = f"udp://{dns.ipv4}:24004#DIRECT"
     config = {
@@ -154,7 +154,7 @@ def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=Fals
     return {
         "config": root / "config.json",
         "argv": [
-            str(root / "artifacts/vcore"),
+            str(root / "artifacts/vole"),
             "-d",
             str(data),
             "-f",
@@ -163,9 +163,9 @@ def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=Fals
         "pass_fds": (tun.fd,),
         "env": {},
         "differences": [
-            "Normal production VCore CLI; the host-owned single raw-IP TUN fd "
+            "Normal production Vole CLI; the host-owned single raw-IP TUN fd "
             "is declared in YAML and inherited at exec.",
-            "VCore requires an unused concrete node and a declared REJECT group; "
+            "Vole requires an unused concrete node and a declared REJECT group; "
             "neither introduces an additional traffic path.",
         ],
     }

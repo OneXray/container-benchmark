@@ -49,7 +49,7 @@ class OwnedProcess:
             self.record["joined"] = True
             raise
         self.record["started"] = True
-        self.reader = threading.Thread(target=self._read, name="vcore-owned-output")
+        self.reader = threading.Thread(target=self._read, name="vole-owned-output")
         self.reader.start()
         return self
 

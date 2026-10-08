@@ -180,7 +180,7 @@ def _configure_decoder(root, origin_ip):
 
 
 def configure(selected, root, origin_ip, pin, guest):
-    """Write one private Xray config and fill VCore node/probe overrides.
+    """Write one private Xray config and fill Vole node/probe overrides.
 
     The caller owns process startup, actual-version reporting and cleanup.
     Every split XHTTP case still has exactly one inbound/session handler.

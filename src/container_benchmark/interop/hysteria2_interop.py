@@ -154,7 +154,7 @@ def _client_identity(root, command):
             "-days",
             "2",
             "-subj",
-            "/CN=VCore Fixture Client CA",
+            "/CN=Vole Fixture Client CA",
             "-addext",
             "basicConstraints=critical,CA:TRUE",
             "-addext",
@@ -221,7 +221,7 @@ def _hop_fixture(guest, case):
         raise ValueError("Hysteria2 hop witness requires its declared fixture")
     directory = Path(guest.root) / "hysteria2" / definition["id"]
     ports = range(definition["port"], definition["port"] + 16)
-    return directory, f"vcore_hy2_{definition['port']}", ports
+    return directory, f"vole_hy2_{definition['port']}", ports
 
 
 def setup_hop_witness(guest, case):

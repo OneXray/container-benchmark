@@ -1,6 +1,6 @@
-# VCore / Mihomo TUN 性能比较
+# Vole / Mihomo TUN 性能比较
 
-在相同容器环境和负载下比较 **VCore / Mihomo** 的原生 TUN 性能：
+在相同容器环境和负载下比较 **Vole / Mihomo** 的原生 TUN 性能：
 实际带宽、CPU、Linux RSS 观测峰值、UDP 丢包率和 DNS 成功次数。
 两者复用同一 Go 流量客户端、网络设施、外部 PID 采样器与统计代码；
 适配层只负责正常构建、配置和启动。结果仅代表下方明确标注的测试版本与环境。
@@ -25,18 +25,18 @@
 
 ```sh
 uv run --locked container-benchmark compare \
-  --source vcore=/absolute/path/to/VCore
+  --source vole=/absolute/path/to/Vole
 ```
 
-默认比较两款内核；VCore 由显式 `--source vcore=PATH` 提供正常 Release checkout，
+默认比较两款内核；Vole 由显式 `--source vole=PATH` 提供正常 Release checkout，
 Mihomo 下载官方最新稳定二进制，不本地编译。可用 `--rates` 选择档位、`--seconds`
 调整时长；默认三档各 60 秒。公共设施不假设项目目录关系。
 
-单独运行 VCore 的默认压力入口为 2000 Mbps、60 秒，同样使用完整 CN 分类：
+单独运行 Vole 的默认压力入口为 2000 Mbps、60 秒，同样使用完整 CN 分类：
 
 ```sh
 uv run --locked container-benchmark stress \
-  --source vcore=/absolute/path/to/VCore --rates 2000 --seconds 60
+  --source vole=/absolute/path/to/Vole --rates 2000 --seconds 60
 ```
 
 当前 CLI 压力入口不提供运行中的 GeoData 状态采样，`--geodata-update`
@@ -47,19 +47,19 @@ uv run --locked container-benchmark stress \
 
 | 内核 | 原生入口 / GeoData |
 | --- | --- |
-| VCore | 原始 FD、原生 DAT；生产 CLI，`tun.file-descriptor` 声明宿主借用的 fd |
+| Vole | 原始 FD、原生 DAT；生产 CLI，`tun.file-descriptor` 声明宿主借用的 fd |
 | Mihomo | 原始 FD、原生 DAT；本轮稳定版默认 MIPS、memconservative 与 redir-host |
 
-VCore 所需的未使用具体节点及 REJECT 组只为满足配置模型，不增加业务路径。
+Vole 所需的未使用具体节点及 REJECT 组只为满足配置模型，不增加业务路径。
 默认 TUN 栈与 DNS 域名提示实现的差异保留，不宣称内部执行方式完全等价。
 两者均通过普通 CLI 的 `-d data -f config` 启动，继承公共设施创建的单个 raw-IP
-TUN fd。VCore 不配置自动路由占位字段，显式设置设备名、MTU 1500、
+TUN fd。Vole 不配置自动路由占位字段，显式设置设备名、MTU 1500、
 `dns-hijack: [198.18.0.1:53]` 与 UDP 超时 60 秒。地址、路由和队列仍由公共设施管理。
 两者就绪均以有界的真实 TUN 业务连通探针判断，不依赖日志中的特殊标记。
 
-VCore 在隔离 GNU/Linux builder 中执行
-`cargo build --locked --release --no-default-features --features cli --lib --bin vcore`。
-被测进程只有 `vcore` 可执行文件；同次构建的 rlib 仅供 builder 内离线 GeoData 探针，
+Vole 在隔离 GNU/Linux builder 中执行
+`cargo build --locked --release --no-default-features --features cli --lib --bin vole`。
+被测进程只有 `vole` 可执行文件；同次构建的 rlib 仅供 builder 内离线 GeoData 探针，
 不进入压力进程。记录原生 ELF 架构、CLI 构建身份、lockfile 与可执行文件 SHA256，
 并核对每轮源码（含未跟踪文件）在构建和负载期间保持一致。
 
@@ -82,6 +82,8 @@ VCore 在隔离 GNU/Linux builder 中执行
 内存口径参见 [Linux exec RSS 记账](https://raw.githubusercontent.com/gregkh/linux/v6.18.35/fs/exec.c)。
 
 ## 实测结果：Bar Chart（历史默认队列）
+
+本节保留更名前的 **VCore** 名称、版本与原始测量结果；这些数据不是更名后的 Vole 构建验证。
 
 以下复用 **2026-10-05–06（Asia/Shanghai）**正式测试中的两核六行有效数据；本次文档整理未重跑 60 秒矩阵，也不混入后续 VCore 独立实验。
 这些历史数据使用默认 TUN / eth0 队列，尚未按新的 4096 设置重跑；不能直接与 4096 队列的独立实验比较。
@@ -198,4 +200,4 @@ xychart
 
 其他独立测试与历史实验已移至本机
 `conclusions/readme-independent-tests-2026-10-07.md`。
-`conclusions/` 保持 Git 忽略，不随仓库发布；README 仅保存 VCore / Mihomo 横向比较。
+`conclusions/` 保持 Git 忽略，不随仓库发布；README 仅保存 Vole / Mihomo 横向比较。

@@ -38,11 +38,11 @@ class GeoDataProbeTests(unittest.TestCase):
         ip += category(b"us", [field(1, b"\x08\x08\x08\x00") + b"\x10\x18"])
         (assets / "geosite.dat").write_bytes(site)
         (assets / "geoip.dat").write_bytes(ip)
-        release = root / "vcore-target/release"
+        release = root / "vole-target/release"
         dependencies = release / "deps"
         dependencies.mkdir(parents=True)
         (root / "artifacts").mkdir()
-        (release / "libvcore.rlib").touch()
+        (release / "libvole.rlib").touch()
         messages = []
         for name in ("regex", "serde_json"):
             (dependencies / f"lib{name}-release.rlib").touch()
@@ -52,13 +52,13 @@ class GeoDataProbeTests(unittest.TestCase):
                     "target": {"name": name, "kind": ["lib"]},
                     "profile": {"opt_level": "3", "test": False},
                     "filenames": [
-                        "/run/benchmark/vcore-target/release/deps/"
+                        "/run/benchmark/vole-target/release/deps/"
                         f"lib{name}-release.rlib"
                     ],
                 }
             )
         messages.append({"reason": "build-finished", "success": True})
-        (root / "vcore-build-artifacts.jsonl").write_text(
+        (root / "vole-build-artifacts.jsonl").write_text(
             "\n".join(json.dumps(message) for message in messages)
         )
 
@@ -104,14 +104,14 @@ class GeoDataProbeTests(unittest.TestCase):
 
     def test_guest_reuses_release_artifacts_when_host_dependency_also_exists(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        release = root / "vcore-target/release"
+        release = root / "vole-target/release"
         dependencies = release / "deps"
         dependencies.mkdir(parents=True)
         (root / "artifacts").mkdir()
         for name in ("regex", "serde_json"):
             (dependencies / f"lib{name}-release.rlib").touch()
         (dependencies / "libregex-host.rlib").touch()
-        (release / "libvcore.rlib").touch()
+        (release / "libvole.rlib").touch()
         artifacts = []
         for name, suffix, level in (
             ("regex", "host", "0"),
@@ -124,13 +124,13 @@ class GeoDataProbeTests(unittest.TestCase):
                     "target": {"name": name, "kind": ["lib"]},
                     "profile": {"opt_level": level, "test": False},
                     "filenames": [
-                        "/run/benchmark/vcore-target/release/deps/"
+                        "/run/benchmark/vole-target/release/deps/"
                         f"lib{name}-{suffix}.rlib"
                     ],
                 }
             )
         artifacts.append({"reason": "build-finished", "success": True})
-        (root / "vcore-build-artifacts.jsonl").write_text(
+        (root / "vole-build-artifacts.jsonl").write_text(
             "\n".join(json.dumps(value) for value in artifacts)
         )
 
@@ -162,7 +162,7 @@ class GeoDataProbeTests(unittest.TestCase):
         self.assertEqual(guest.calls[0][0][0], "rustc")
         self.assertIn("--extern", guest.calls[0][0])
         self.assertIn(
-            "regex=/run/benchmark/vcore-target/release/deps/libregex-release.rlib",
+            "regex=/run/benchmark/vole-target/release/deps/libregex-release.rlib",
             guest.calls[0][0],
         )
         self.assertFalse(any("-host.rlib" in part for part in guest.calls[0][0]))
@@ -217,7 +217,7 @@ class GeoDataProbeTests(unittest.TestCase):
         for case, error in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                dependencies = root / "vcore-target/release/deps"
+                dependencies = root / "vole-target/release/deps"
                 dependencies.mkdir(parents=True)
                 artifacts = []
                 for name in ("regex", "serde_json"):
@@ -229,14 +229,14 @@ class GeoDataProbeTests(unittest.TestCase):
                             "target": {"name": name, "kind": ["lib"]},
                             "profile": {"opt_level": "3", "test": False},
                             "filenames": [
-                                "/run/benchmark/vcore-target/release/deps/" + path.name
+                                "/run/benchmark/vole-target/release/deps/" + path.name
                             ],
                         }
                     )
                 if case == "second-release":
                     extra = json.loads(json.dumps(artifacts[0]))
                     extra["filenames"] = [
-                        "/run/benchmark/vcore-target/release/deps/libregex-other.rlib"
+                        "/run/benchmark/vole-target/release/deps/libregex-other.rlib"
                     ]
                     (dependencies / "libregex-other.rlib").touch()
                     artifacts.append(extra)
@@ -254,7 +254,7 @@ class GeoDataProbeTests(unittest.TestCase):
                     artifacts.append(
                         {"reason": "build-finished", "success": case != "failed"}
                     )
-                (root / "vcore-build-artifacts.jsonl").write_text(
+                (root / "vole-build-artifacts.jsonl").write_text(
                     "\n".join(json.dumps(value) for value in artifacts)
                 )
                 with (

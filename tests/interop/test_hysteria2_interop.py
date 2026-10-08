@@ -97,7 +97,7 @@ class Hysteria2InteropTests(unittest.TestCase):
                 {
                     "rule": {
                         "family": "ip",
-                        "table": "vcore_hy2_25020",
+                        "table": "vole_hy2_25020",
                         "chain": "ingress",
                         "comment": f"p{port}",
                         "expr": [{"counter": {"packets": int(port == 25020)}}],

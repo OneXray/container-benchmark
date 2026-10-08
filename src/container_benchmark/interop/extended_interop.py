@@ -78,7 +78,7 @@ def official_caddy(root):
 
     def prepare(staging):
         request = urllib.request.Request(
-            CADDY_LATEST, headers={"User-Agent": "VCore-interop"}, method="HEAD"
+            CADDY_LATEST, headers={"User-Agent": "Vole-interop"}, method="HEAD"
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             latest = response.geturl()
@@ -533,7 +533,7 @@ def _caddy(selected, root, pin, guest):
 
 
 def configure(selected, root, origin_ip, pin, guest):
-    """Write private native configs and expose only VCore node overrides."""
+    """Write private native configs and expose only Vole node overrides."""
     root = Path(root)
     ipaddress.IPv4Address(origin_ip)
     backends = {case["backend"] for case in selected}

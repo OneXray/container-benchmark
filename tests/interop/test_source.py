@@ -31,19 +31,19 @@ class SourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "checkout"
             (source / "include").mkdir(parents=True)
-            for name in ("Cargo.toml", "Cargo.lock", "include/vcore.h"):
+            for name in ("Cargo.toml", "Cargo.lock", "include/vole.h"):
                 (source / name).touch()
             parsed = interop.parse_args(
-                ["--source", "vcore=" + str(source), "--protocol", "socks5"]
+                ["--source", "vole=" + str(source), "--protocol", "socks5"]
             )
             self.assertEqual(parsed.source_dir, source.resolve())
             for values in (
                 ["--source", "other=" + str(source)],
                 [
                     "--source",
-                    "vcore=" + str(source),
+                    "vole=" + str(source),
                     "--source",
-                    "vcore=" + str(source),
+                    "vole=" + str(source),
                 ],
             ):
                 with (
@@ -58,7 +58,7 @@ class SourceTests(unittest.TestCase):
             source, work, cache = root / "source", root / "work", root / "cache"
             for path in (source, work, cache):
                 path.mkdir()
-            (source / "Cargo.toml").write_text('[package]\nname = "vcore"\n')
+            (source / "Cargo.toml").write_text('[package]\nname = "vole"\n')
             session = SimpleNamespace(
                 work=work, source_dir=source, run_id="offline", guests=[]
             )
@@ -94,7 +94,7 @@ class SourceTests(unittest.TestCase):
                 guest.__enter__()
             arguments = operation.call_args_list[0].args
             self.assertIn(
-                f"type=bind,source={source},target=/src/vcore,readonly", arguments
+                f"type=bind,source={source},target=/src/vole,readonly", arguments
             )
             self.assertTrue(
                 any(
@@ -114,7 +114,7 @@ class SourceTests(unittest.TestCase):
         guest = lab.Guest(session, "official", "builder", source=True)
         with (
             patch.object(lab, "command", side_effect=AssertionError),
-            self.assertRaisesRegex(ValueError, "explicit VCore source"),
+            self.assertRaisesRegex(ValueError, "explicit Vole source"),
         ):
             guest.__enter__()
 
@@ -139,8 +139,8 @@ class SourceTests(unittest.TestCase):
         with patch(
             "container_benchmark.core_comparison.main", new=Mock(return_value=0)
         ) as run:
-            self.assertEqual(cli.main(["stress", "--source", "vcore=/explicit"]), 0)
-        run.assert_called_once_with(["--source", "vcore=/explicit"], stress=True)
+            self.assertEqual(cli.main(["stress", "--source", "vole=/explicit"]), 0)
+        run.assert_called_once_with(["--source", "vole=/explicit"], stress=True)
 
 
 if __name__ == "__main__":

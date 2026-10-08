@@ -217,7 +217,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(args.sources, {})
 
     def test_retired_private_flags_fail_before_resources(self):
-        for flag in ("--vcore", "--workers", "--backend", "--profile", "--tun-ring"):
+        for flag in ("--vole", "--workers", "--backend", "--profile", "--tun-ring"):
             with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
                     comparison.parse_args(["--core", "mihomo", flag, "unused"])
@@ -225,13 +225,13 @@ class ComparisonTests(unittest.TestCase):
 
     def test_no_source_built_core_silently_uses_a_sibling(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            comparison.parse_args(["--core", "vcore"])
+            comparison.parse_args(["--core", "vole"])
 
-    def test_default_comparison_is_only_vcore_and_mihomo(self):
+    def test_default_comparison_is_only_vole_and_mihomo(self):
         with tempfile.TemporaryDirectory() as source:
-            args = comparison.parse_args(["--source", "vcore=" + source])
-            self.assertEqual(args.core, ["vcore", "mihomo"])
-            self.assertEqual(list(args.sources), ["vcore"])
+            args = comparison.parse_args(["--source", "vole=" + source])
+            self.assertEqual(args.core, ["vole", "mihomo"])
+            self.assertEqual(list(args.sources), ["vole"])
 
     def test_other_source_names_are_rejected(self):
         with tempfile.TemporaryDirectory() as source:
@@ -254,10 +254,10 @@ class ComparisonTests(unittest.TestCase):
             ):
                 comparison.parse_args(["--core", core])
 
-    def test_stress_is_explicit_vcore_mixed_load_without_changing_comparison(self):
+    def test_stress_is_explicit_vole_mixed_load_without_changing_comparison(self):
         with tempfile.TemporaryDirectory() as source:
-            args = comparison.parse_args(["--source", "vcore=" + source], stress=True)
-            self.assertEqual(args.core, ["vcore"])
+            args = comparison.parse_args(["--source", "vole=" + source], stress=True)
+            self.assertEqual(args.core, ["vole"])
             self.assertEqual(args.rates, [2000])
             self.assertEqual(
                 (args.seconds, args.dns_qps, args.transport), (60, 1000, "mixed")
@@ -268,7 +268,7 @@ class ComparisonTests(unittest.TestCase):
             for stress in (False, True):
                 with self.subTest(stress=stress):
                     args = comparison.parse_args(
-                        ["--source", "vcore=" + source],
+                        ["--source", "vole=" + source],
                         stress=stress,
                     )
                     self.assertEqual(
@@ -286,7 +286,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             comparison.parse_args(
-                ["--source", "vcore=" + source, "--geodata-records", "1280000"],
+                ["--source", "vole=" + source, "--geodata-records", "1280000"],
                 stress=True,
             )
 
@@ -311,7 +311,7 @@ class ComparisonTests(unittest.TestCase):
             diagnostics = io.StringIO()
             with contextlib.redirect_stderr(diagnostics), self.assertRaises(SystemExit):
                 comparison.parse_args(
-                    ["--source", "vcore=" + source, "--geodata-update"], stress=True
+                    ["--source", "vole=" + source, "--geodata-update"], stress=True
                 )
             self.assertIn("unavailable", diagnostics.getvalue())
             self.assertIn("live state observer", diagnostics.getvalue())
@@ -320,7 +320,7 @@ class ComparisonTests(unittest.TestCase):
                 (
                     [
                         "--source",
-                        "vcore=" + source,
+                        "vole=" + source,
                         "--geodata-update",
                         "--seconds",
                         "3",

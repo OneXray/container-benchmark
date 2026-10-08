@@ -37,7 +37,7 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertEqual(before["untracked_files"], {"new-cli.rs": sha256(code)})
         self.assertEqual(before["lockfile_sha256"], sha256(self.root / "Cargo.lock"))
         (self.root / "target").mkdir()
-        (self.root / "target/vcore").write_text("ignored executable")
+        (self.root / "target/vole").write_text("ignored executable")
         self.assertEqual(source_identity(self.root), before)
         code.write_text("different implementation")
         after = source_identity(self.root)
@@ -47,7 +47,7 @@ class SourceIdentityTests(unittest.TestCase):
 
     def test_freeze_check_rejects_source_change(self):
         before = source_identity(self.root)
-        _check_sources({"vcore": self.root}, {"vcore": before})
+        _check_sources({"vole": self.root}, {"vole": before})
         (self.root / "Cargo.lock").write_text("changed lock")
         with self.assertRaisesRegex(RuntimeError, "selected source changed"):
-            _check_sources({"vcore": self.root}, {"vcore": before})
+            _check_sources({"vole": self.root}, {"vole": before})

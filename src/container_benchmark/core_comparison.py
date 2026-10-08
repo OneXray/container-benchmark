@@ -1,4 +1,4 @@
-"""One matched workload and Linux observer for VCore and Mihomo."""
+"""One matched workload and Linux observer for Vole and Mihomo."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-CORES = ("vcore", "mihomo")
+CORES = ("vole", "mihomo")
 QUEUE_LENGTH = 4096
 
 
@@ -23,10 +23,10 @@ def parse_args(argv=None, *, stress=False):
     parser.add_argument(
         "--core",
         nargs="+",
-        choices=("vcore",) if stress else CORES,
-        default=["vcore"] if stress else list(CORES),
+        choices=("vole",) if stress else CORES,
+        default=["vole"] if stress else list(CORES),
     )
-    parser.add_argument("--source", action="append", default=[], metavar="vcore=PATH")
+    parser.add_argument("--source", action="append", default=[], metavar="vole=PATH")
     parser.add_argument(
         "--rates",
         nargs="+",
@@ -58,14 +58,14 @@ def parse_args(argv=None, *, stress=False):
     args.sources = {}
     for value in args.source:
         name, separator, path = value.partition("=")
-        if not separator or name != "vcore" or not path or name in args.sources:
-            parser.error("--source requires a unique vcore=PATH")
+        if not separator or name != "vole" or not path or name in args.sources:
+            parser.error("--source requires a unique vole=PATH")
         source = Path(path).resolve(strict=True)
         if not source.is_dir():
             parser.error("--source must point to a source directory")
         args.sources[name] = source
-    if "vcore" in args.core and "vcore" not in args.sources:
-        parser.error("VCore requires --source vcore=PATH")
+    if "vole" in args.core and "vole" not in args.sources:
+        parser.error("Vole requires --source vole=PATH")
     return args
 
 
@@ -92,10 +92,10 @@ def _annotate_stress_memory(result):
 
 
 def _configure(core, root, assets, samples, origins, dns, tun, *, geodata_update=False):
-    from . import core_mihomo_adapter, core_vcore_adapter
+    from . import core_mihomo_adapter, core_vole_adapter
 
-    if core == "vcore":
-        return core_vcore_adapter.configure(
+    if core == "vole":
+        return core_vole_adapter.configure(
             root, assets, samples, origins, dns, tun, geodata_update=geodata_update
         )
     if core != "mihomo":
@@ -283,7 +283,7 @@ def _guest_run(root, core):
 
 def main(argv=None, *, stress=False):
     parsed = parse_args(argv, stress=stress)
-    from . import core_mihomo_adapter, core_vcore_adapter, workload
+    from . import core_mihomo_adapter, core_vole_adapter, workload
     from .geodata import (
         acquire,
         contains_ip,
@@ -358,8 +358,8 @@ def main(argv=None, *, stress=False):
             image, builder = builder_inputs(root)
             report["inputs"]["builder"] = builder
             mounts = (
-                core_vcore_adapter.source_mounts(parsed.sources["vcore"])
-                if "vcore" in parsed.core
+                core_vole_adapter.source_mounts(parsed.sources["vole"])
+                if "vole" in parsed.core
                 else []
             )
             report["path_dependencies"] = {
@@ -380,10 +380,10 @@ def main(argv=None, *, stress=False):
                 network="default",
                 role="builder",
             ) as guest:
-                install_tools(guest, toolchain="vcore" in parsed.core)
+                install_tools(guest, toolchain="vole" in parsed.core)
                 for core in parsed.core:
-                    if core == "vcore":
-                        report["identities"][core] = core_vcore_adapter.build(
+                    if core == "vole":
+                        report["identities"][core] = core_vole_adapter.build(
                             guest,
                             root,
                             geodata_update=getattr(parsed, "geodata_update", False),

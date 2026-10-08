@@ -8,10 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from container_benchmark import core_vcore_adapter as vcore
+from container_benchmark import core_vole_adapter as vole
 
 
-class VCoreAdapterTest(unittest.TestCase):
+class VoleAdapterTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.assets = self.root / "assets"
@@ -25,8 +25,8 @@ class VCoreAdapterTest(unittest.TestCase):
         self.witnesses = {"domain_positive": "example.cn"}
 
     def configure(self, *, geodata_update=False):
-        result = vcore.configure(
-            self.root / "vcore",
+        result = vole.configure(
+            self.root / "vole",
             self.assets,
             self.witnesses,
             self.origins,
@@ -39,15 +39,15 @@ class VCoreAdapterTest(unittest.TestCase):
     def test_update_sampling_is_unavailable_before_configuration_or_build(self):
         with self.assertRaisesRegex(ValueError, "no live state observer"):
             self.configure(geodata_update=True)
-        self.assertFalse((self.root / "vcore").exists())
+        self.assertFalse((self.root / "vole").exists())
         guest = Mock()
         with self.assertRaisesRegex(ValueError, "no live state observer"):
-            vcore.build(guest, self.root, geodata_update=True)
+            vole.build(guest, self.root, geodata_update=True)
         guest.execute.assert_not_called()
 
     def test_normal_cli_declares_and_inherits_the_host_owned_raw_ip_fd(self):
-        root = self.root / "vcore"
-        result = vcore.configure(
+        root = self.root / "vole"
+        result = vole.configure(
             root,
             self.assets,
             self.witnesses,
@@ -70,7 +70,7 @@ class VCoreAdapterTest(unittest.TestCase):
         self.assertEqual(
             result["argv"],
             [
-                str(root / "artifacts/vcore"),
+                str(root / "artifacts/vole"),
                 "-d",
                 str(root / "data"),
                 "-f",
@@ -120,42 +120,42 @@ class VCoreAdapterTest(unittest.TestCase):
 
     def prepare_build(self):
         root = self.root / "build"
-        release = root / "vcore-target/release"
+        release = root / "vole-target/release"
         release.mkdir(parents=True)
         (root / "artifacts").mkdir()
         header = bytearray(20)
         header[:6] = b"\x7fELF\x02\x01"
         header[18:20] = (183).to_bytes(2, "little")
-        identity = b"VCore;engine=rust;coreVersion=0.1.0"
-        (root / "artifacts/vcore").write_bytes(header + identity)
-        (root / "vcore-version.log").write_text("VCore 0.1.0\n" + identity.decode())
-        (release / "libvcore.rlib").write_bytes(b"builder-only Rust library")
+        identity = b"Vole;engine=rust;coreVersion=0.1.0"
+        (root / "artifacts/vole").write_bytes(header + identity)
+        (root / "vole-version.log").write_text("Vole 0.1.0\n" + identity.decode())
+        (release / "libvole.rlib").write_bytes(b"builder-only Rust library")
         source = self.root / "source"
         source.mkdir()
         (source / "Cargo.toml").write_text('[package]\nversion = "0.1.0"\n')
         (source / "Cargo.lock").write_text("locked dependencies")
-        return root, Mock(sources={"vcore": source})
+        return root, Mock(sources={"vole": source})
 
     def test_build_records_cli_identity_and_builder_only_rlib(self):
         root, guest = self.prepare_build()
-        identity = vcore.build(guest, root)
+        identity = vole.build(guest, root)
 
         self.assertEqual(guest.execute.call_count, 2)
         command = guest.execute.call_args_list[0].args[0][-1]
         self.assertIn(
             "cargo build --locked --release --no-default-features "
-            "--features cli --lib --bin vcore ",
+            "--features cli --lib --bin vole ",
             command,
         )
         self.assertIn("--message-format=json-render-diagnostics", command)
         self.assertNotIn("ffi", command)
         self.assertNotIn("launcher.c", command)
         self.assertNotIn("cc -", command)
-        self.assertEqual(identity["library_name"], "libvcore.rlib")
+        self.assertEqual(identity["library_name"], "libvole.rlib")
         self.assertEqual(identity["library_format"], "rlib")
         self.assertEqual(identity["binary_format"], "ELF64 little-endian aarch64")
         self.assertEqual(
-            identity["build_identity"], "VCore;engine=rust;coreVersion=0.1.0"
+            identity["build_identity"], "Vole;engine=rust;coreVersion=0.1.0"
         )
         self.assertEqual(
             identity["library_sha256"],
@@ -168,16 +168,16 @@ class VCoreAdapterTest(unittest.TestCase):
 
     def test_build_rejects_wrong_binary_architecture_or_identity(self):
         root, guest = self.prepare_build()
-        binary = root / "artifacts/vcore"
+        binary = root / "artifacts/vole"
         original = binary.read_bytes()
         binary.write_bytes(original[:18] + (62).to_bytes(2, "little") + original[20:])
         with self.assertRaisesRegex(ValueError, "native Linux arm64 ELF"):
-            vcore.build(guest, root)
+            vole.build(guest, root)
         binary.write_bytes(original)
-        (root / "vcore-version.log").write_text("VCore 0.2.0")
+        (root / "vole-version.log").write_text("Vole 0.2.0")
         with self.assertRaisesRegex(ValueError, "build identity"):
-            vcore.build(guest, root)
-        (root / "vcore-version.log").write_text("VCore;engine=rust;coreVersion=0.1.0")
+            vole.build(guest, root)
+        (root / "vole-version.log").write_text("Vole;engine=rust;coreVersion=0.1.0")
         binary.write_bytes(original[:20] + b"other executable")
         with self.assertRaisesRegex(ValueError, "build identity"):
-            vcore.build(guest, root)
+            vole.build(guest, root)

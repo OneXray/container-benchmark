@@ -7,7 +7,7 @@ use std::{env, fs, net::IpAddr, path::Path, time::Instant};
 
 use regex::bytes::RegexBuilder;
 use serde_json::{Value, json};
-use vcore::{
+use vole::{
     config::{DnsNameserverPolicy, RuleAction, RuleKind, RuleSpec},
     geodata::GeoData,
     routing::GeoMatcher,
@@ -192,7 +192,7 @@ fn actual_snapshot_probe(input: &Value) -> Result<Value, &'static str> {
             "new_accounted_peak_bytes": new.peak_allocation_capacity(),
         },
         "scope": "offline same-asset reload with old snapshot retained; not live update plus traffic",
-        "rss_scope": "Linux probe process; excludes VCore runtime/DNS/TUN; not Apple footprint",
+        "rss_scope": "Linux probe process; excludes Vole runtime/DNS/TUN; not Apple footprint",
     });
     drop(new);
     drop(old);

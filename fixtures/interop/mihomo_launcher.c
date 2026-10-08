@@ -1,6 +1,6 @@
 /* Production Invoke lifecycle adapter. No test features or networking code. */
 #define _POSIX_C_SOURCE 200809L
-#include "vcore.h"
+#include "vole.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +9,7 @@
 static char instance[21];
 
 static int invoke(const char *request, int create) {
-    char *reply = VCoreInvoke(request);
+    char *reply = VoleInvoke(request);
     if (!reply) return 0;
     int success = strstr(reply, "\"success\":true") != NULL;
     if (success && create) {
@@ -22,8 +22,8 @@ static int invoke(const char *request, int create) {
             else { memcpy(instance, start, length); instance[length] = 0; }
         }
     }
-    if (!success) fprintf(stderr, "VCore public lifecycle request failed\n");
-    VCoreFree(reply);
+    if (!success) fprintf(stderr, "Vole public lifecycle request failed\n");
+    VoleFree(reply);
     return success;
 }
 

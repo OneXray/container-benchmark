@@ -70,7 +70,7 @@ def command(*arguments, timeout=60):
 def download(url, path, *, limit=768 * 1024**2):
     if not url.startswith("https://"):
         raise ValueError("official dependency download requires HTTPS")
-    request = urllib.request.Request(url, headers={"User-Agent": "VCore-interop"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Vole-interop"})
     deadline, total = time.monotonic() + 900, 0
     with (
         urllib.request.urlopen(request, timeout=30) as response,
@@ -225,7 +225,7 @@ class Guest:
         self, session, image, role, *, cache=None, source=False, capabilities=()
     ):
         self.session, self.root, self.image = session, session.work, image
-        self.name = f"vcore-interop-{session.run_id}-{role}"
+        self.name = f"vole-interop-{session.run_id}-{role}"
         self.cache, self.source = cache, source
         self.capabilities = tuple(capabilities)
         if set(self.capabilities) - {"NET_ADMIN"}:
@@ -244,8 +244,8 @@ class Guest:
         if self.source:
             source_dir = self.session.source_dir
             if source_dir is None:
-                raise ValueError("interop builder requires an explicit VCore source")
-            mounts.append((source_dir, "/src/vcore", True))
+                raise ValueError("interop builder requires an explicit Vole source")
+            mounts.append((source_dir, "/src/vole", True))
             manifest = tomllib.loads((source_dir / "Cargo.toml").read_text())
             for table in ("dependencies", "build-dependencies", "dev-dependencies"):
                 for dependency in manifest.get(table, {}).values():
@@ -254,11 +254,11 @@ class Guest:
                     host = (source_dir / dependency["path"]).resolve(strict=True)
                     if host.is_relative_to(source_dir):
                         continue
-                    target = os.path.normpath("/src/vcore/" + dependency["path"])
+                    target = os.path.normpath("/src/vole/" + dependency["path"])
                     if target in (
                         "/",
                         "/src",
-                        "/src/vcore",
+                        "/src/vole",
                         "/benchmark",
                         "/benchmark/src",
                         "/benchmark/fixtures",
@@ -282,7 +282,7 @@ class Guest:
             "--label",
             f"purpose={PURPOSE}",
             "--label",
-            f"vcore-run={self.session.run_id}",
+            f"vole-run={self.session.run_id}",
             "--network",
             f"{NETWORK},mtu=1500",
             "--cpus",
@@ -297,7 +297,7 @@ class Guest:
                 for argument in ("--cap-add", item)
             ],
             "--env",
-            "VCORE_INTEROP_ISOLATED=1",
+            "VOLE_INTEROP_ISOLATED=1",
             "--env",
             "BENCHMARK_INTEROP_WORK=/work",
             "--env",
@@ -373,7 +373,7 @@ class Guest:
             labels = row["configuration"].get("labels", {})
             if (
                 labels.get("purpose") != PURPOSE
-                or labels.get("vcore-run") != self.session.run_id
+                or labels.get("vole-run") != self.session.run_id
             ):
                 raise RuntimeError("container ownership mismatch; refusing cleanup")
             if row["status"]["state"] == "running":

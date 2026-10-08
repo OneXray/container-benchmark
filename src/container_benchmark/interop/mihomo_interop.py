@@ -97,7 +97,7 @@ def cases(protocols):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(prog="container-benchmark interop")
-    parser.add_argument("--source", action="append", default=[], metavar="vcore=PATH")
+    parser.add_argument("--source", action="append", default=[], metavar="vole=PATH")
     parser.add_argument(
         "--protocol", nargs="+", choices=PROTOCOLS, default=list(PROTOCOLS)
     )
@@ -112,17 +112,17 @@ def parse_args(argv=None):
     args.source_dir = None
     for value in args.source:
         name, separator, raw = value.partition("=")
-        if not separator or name != "vcore" or not raw or args.source_dir is not None:
-            parser.error("--source requires a unique vcore=PATH")
+        if not separator or name != "vole" or not raw or args.source_dir is not None:
+            parser.error("--source requires a unique vole=PATH")
         source = Path(raw).resolve(strict=True)
         if not source.is_dir() or not all(
             (source / name).is_file()
-            for name in ("Cargo.toml", "Cargo.lock", "include/vcore.h")
+            for name in ("Cargo.toml", "Cargo.lock", "include/vole.h")
         ):
-            parser.error("--source must point to a VCore source checkout")
+            parser.error("--source must point to a Vole source checkout")
         args.source_dir = source
     if not args.list and args.source_dir is None:
-        parser.error("VCore interoperability requires --source vcore=PATH")
+        parser.error("Vole interoperability requires --source vole=PATH")
     return args
 
 
@@ -309,7 +309,7 @@ def _load_probe():
 def _guest(root):
     from .processes import OwnedProcess
 
-    if sys.platform != "linux" or os.environ.get("VCORE_INTEROP_ISOLATED") != "1":
+    if sys.platform != "linux" or os.environ.get("VOLE_INTEROP_ISOLATED") != "1":
         raise RuntimeError("interoperability consumer requires the owned Linux guest")
     fixture = json.loads((root / "interop.json").read_text())
     result_path = root / fixture.get("result_file", "result.json")
@@ -335,7 +335,7 @@ def _guest(root):
             }
             result["cases"].append(record)
             with OwnedProcess(
-                [str(root / "artifacts/vcore"), str(path), str(directory / "ready")],
+                [str(root / "artifacts/vole"), str(path), str(directory / "ready")],
                 directory / "core.log",
                 record,
             ) as process:
@@ -343,7 +343,7 @@ def _guest(root):
                 while not (directory / "ready").is_file():
                     process.ensure_alive()
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("VCore public lifecycle readiness failed")
+                        raise TimeoutError("Vole public lifecycle readiness failed")
                     time.sleep(0.05)
                 record["phase"] = "tcp-udp-payload-and-origin-witness"
                 record.update(
@@ -359,7 +359,7 @@ def _guest(root):
                 record["phase"] = "public-lifecycle-stop"
             if record["exit_code"] != 0 or not record["joined"]:
                 record["status"] = "FAIL_CLEANUP"
-                raise RuntimeError("VCore lifecycle did not stop cleanly")
+                raise RuntimeError("Vole lifecycle did not stop cleanly")
             save(result_path, result)
         result["status"] = "PASS"
     except (OSError, ValueError, RuntimeError, TimeoutError) as error:
@@ -375,7 +375,7 @@ def _guest(root):
 def _peer(root):
     from .processes import OwnedProcess
 
-    if sys.platform != "linux" or os.environ.get("VCORE_INTEROP_ISOLATED") != "1":
+    if sys.platform != "linux" or os.environ.get("VOLE_INTEROP_ISOLATED") != "1":
         raise RuntimeError("official protocol peer requires the owned Linux guest")
     commands = json.loads((root / "peer-processes.json").read_text())
     ready = root / "peer/ready"
@@ -437,7 +437,7 @@ def _peer(root):
 
 def _summary(root, report):
     (root / "summary.md").write_text(
-        "# VCore / official protocol-peer interoperability\n\n```json\n"
+        "# Vole / official protocol-peer interoperability\n\n```json\n"
         + json.dumps(report, indent=2)
         + "\n```\n"
     )
@@ -453,8 +453,8 @@ def _safe_reason(error):
         "UDP ",
         "partial UDP ",
         "truncated ",
-        "VCore public ",
-        "VCore lifecycle ",
+        "Vole public ",
+        "Vole lifecycle ",
         "Mihomo actual ",
         "owned interop ",
         "isolated service ",
@@ -791,7 +791,7 @@ def run(protocols=PROTOCOLS, *, backends=BACKENDS, list_only=False, source_dir=N
             )
         return
     if source_dir is None:
-        raise ValueError("VCore interoperability requires an explicit source checkout")
+        raise ValueError("Vole interoperability requires an explicit source checkout")
     from .mihomo_lab import (
         Guest,
         Session,
@@ -817,7 +817,7 @@ def run(protocols=PROTOCOLS, *, backends=BACKENDS, list_only=False, source_dir=N
                 "container-benchmark",
                 "interop",
                 "--source",
-                "vcore=" + str(session.source_dir),
+                "vole=" + str(session.source_dir),
                 "--backend",
                 *backends,
                 "--protocol",
@@ -858,25 +858,25 @@ def run(protocols=PROTOCOLS, *, backends=BACKENDS, list_only=False, source_dir=N
             with Guest(session, image, "builder", source=True) as guest:
                 _phase(report, "builder-install")
                 install_tools(guest, rust=report["builder"]["rust"])
-                _phase(report, "production-vcore-build")
+                _phase(report, "production-vole-build")
                 guest.execute(
                     [
                         "/bin/sh",
                         "-ec",
-                        "cd /src/vcore; "
+                        "cd /src/vole; "
                         "CARGO_TARGET_DIR=/work/target cargo build --locked --release "
                         "--lib --features ffi; cc -O2 -Wall -Wextra -Werror "
-                        "-I /src/vcore/include "
+                        "-I /src/vole/include "
                         "/benchmark/fixtures/interop/mihomo_launcher.c "
-                        "/work/target/release/libvcore.a -pthread -ldl -lm -lstdc++ "
-                        "-o /work/artifacts/vcore",
+                        "/work/target/release/libvole.a -pthread -ldl -lm -lstdc++ "
+                        "-o /work/artifacts/vole",
                     ],
-                    root / "vcore-build.log",
+                    root / "vole-build.log",
                     timeout=4000,
                 )
-                report["vcore"] = {
-                    "binary_sha256": sha256(root / "artifacts/vcore"),
-                    "library_sha256": sha256(root / "target/release/libvcore.a"),
+                report["vole"] = {
+                    "binary_sha256": sha256(root / "artifacts/vole"),
+                    "library_sha256": sha256(root / "target/release/libvole.a"),
                     "features": "normal release default protocol features plus ffi",
                     "test_only_features": False,
                 }

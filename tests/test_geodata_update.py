@@ -23,7 +23,7 @@ SPEC.loader.exec_module(fixture)
 class UpdateEvidenceTest(unittest.TestCase):
     def setUp(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.root, self.assets = root / "vcore-2000", root / "rules"
+        self.root, self.assets = root / "vole-2000", root / "rules"
         (self.root / "mixed").mkdir(parents=True)
         (root / "origins").mkdir()
         self.assets.mkdir()
@@ -44,7 +44,7 @@ class UpdateEvidenceTest(unittest.TestCase):
             }
             self.events.append(
                 {
-                    "job": "vcore-2000",
+                    "job": "vole-2000",
                     "kind": asset.name,
                     "phase": "served",
                     "status": 200,
@@ -94,8 +94,8 @@ class UpdateEvidenceTest(unittest.TestCase):
 
     def test_fixture_only_exposes_controlled_dat_paths(self):
         self.assertEqual(
-            fixture.asset_request("/vcore-2000/geosite.dat"),
-            ("vcore-2000", "geosite.dat"),
+            fixture.asset_request("/vole-2000/geosite.dat"),
+            ("vole-2000", "geosite.dat"),
         )
         for path in ("/../geosite.dat", "/job/state.json", "/a/b/geoip.dat"):
             with self.subTest(path=path), self.assertRaises(ValueError):

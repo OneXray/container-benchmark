@@ -28,15 +28,15 @@ def probe_input(real_regexes, *, actual_assets=None):
 def _release_dependencies(root):
     """Use this successful build's artifact stream, not stale directory entries.
 
-    Cargo's release build dependencies default to opt-level 0, while VCore's
+    Cargo's release build dependencies default to opt-level 0, while Vole's
     runtime dependencies use 3. A second release candidate remains ambiguous;
     never guess its version or feature set from a filename or directory order.
     """
     names = ("regex", "serde_json")
     candidates = {name: set() for name in names}
-    expected = PurePosixPath("/run/benchmark/vcore-target/release/deps")
+    expected = PurePosixPath("/run/benchmark/vole-target/release/deps")
     finished = False
-    for line in (root / "vcore-build-artifacts.jsonl").read_text().splitlines():
+    for line in (root / "vole-build-artifacts.jsonl").read_text().splitlines():
         if not line.startswith("{"):
             continue
         try:
@@ -69,7 +69,7 @@ def _release_dependencies(root):
             candidates[name].add(path.name)
     if not finished:
         raise RuntimeError("GeoData probe requires a successful Cargo artifact stream")
-    dependencies = root / "vcore-target/release/deps"
+    dependencies = root / "vole-target/release/deps"
     result = {}
     for name, filenames in candidates.items():
         if len(filenames) != 1:
@@ -132,7 +132,7 @@ def _regex_summary(patterns):
 
 
 def run(guest, root, *, assets):
-    """Run after VCore Release build, before stopping its isolated builder.
+    """Run after Vole Release build, before stopping its isolated builder.
 
     No network, Cargo build, dependency downloads or host execution is added.
     Inputs/builds/results are scoped to the normal per-run scratch directory.
@@ -144,23 +144,23 @@ def run(guest, root, *, assets):
     input_path = root / "geodata-probe-input.json"
     report_path = root / "geodata-probe-report.json"
     save(input_path, input_value)
-    release = root / "vcore-target/release"
+    release = root / "vole-target/release"
     dependencies = release / "deps"
     libraries = _release_dependencies(root)
 
     def guest_path(path):
         return "/run/benchmark/" + path.relative_to(root).as_posix()
 
-    library = release / "libvcore.rlib"
+    library = release / "libvole.rlib"
     if not library.is_file():
-        raise RuntimeError("GeoData probe requires the normal built VCore rlib")
+        raise RuntimeError("GeoData probe requires the normal built Vole rlib")
     argv = [
         "rustc",
         "--edition=2024",
         "-O",
         "/src/benchmark/fixtures/geodata/probe.rs",
         "--extern",
-        "vcore=" + guest_path(library),
+        "vole=" + guest_path(library),
         "--extern",
         "regex=" + guest_path(libraries["regex"]),
         "--extern",

@@ -1,4 +1,4 @@
-"""VCore public SOCKS5 payload, held-session and rejection probes; no retries."""
+"""Vole public SOCKS5 payload, held-session and rejection probes; no retries."""
 
 import json
 import math
