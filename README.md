@@ -32,15 +32,36 @@ uv run --locked container-benchmark compare \
 Mihomo 下载官方最新稳定二进制，不本地编译。可用 `--rates` 选择档位、`--seconds`
 调整时长；默认三档各 60 秒。公共设施不假设项目目录关系。
 
+单独运行 VCore 的默认压力入口为 2000 Mbps、60 秒，同样使用完整 CN 分类：
+
+```sh
+uv run --locked container-benchmark stress \
+  --source vcore=/absolute/path/to/VCore --rates 2000 --seconds 60
+```
+
+当前 CLI 压力入口不提供运行中的 GeoData 状态采样，`--geodata-update`
+会在参数解析时明确拒绝；默认压力保留启动时真实 DAT 加载与独立离线 GeoData 探针。
+这不代表内核缺少 GeoData 更新能力，也不把旧 C ABI 状态采样当成本轮 CLI 证据。
+
 ## 适配差异
 
 | 内核 | 原生入口 / GeoData |
 | --- | --- |
-| VCore | 原始 FD、原生 DAT；无自带 Linux CLI，最小 C 适配仅调用生产生命周期 ABI |
+| VCore | 原始 FD、原生 DAT；生产 CLI，`tun.file-descriptor` 声明宿主借用的 fd |
 | Mihomo | 原始 FD、原生 DAT；本轮稳定版默认 MIPS、memconservative 与 redir-host |
 
 VCore 所需的未使用具体节点及 REJECT 组只为满足配置模型，不增加业务路径。
 默认 TUN 栈与 DNS 域名提示实现的差异保留，不宣称内部执行方式完全等价。
+两者均通过普通 CLI 的 `-d data -f config` 启动，继承公共设施创建的单个 raw-IP
+TUN fd。VCore 不配置自动路由占位字段，显式设置设备名、MTU 1500、
+`dns-hijack: [198.18.0.1:53]` 与 UDP 超时 60 秒。地址、路由和队列仍由公共设施管理。
+两者就绪均以有界的真实 TUN 业务连通探针判断，不依赖日志中的特殊标记。
+
+VCore 在隔离 GNU/Linux builder 中执行
+`cargo build --locked --release --no-default-features --features cli --lib --bin vcore`。
+被测进程只有 `vcore` 可执行文件；同次构建的 rlib 仅供 builder 内离线 GeoData 探针，
+不进入压力进程。记录原生 ELF 架构、CLI 构建身份、lockfile 与可执行文件 SHA256，
+并核对每轮源码（含未跟踪文件）在构建和负载期间保持一致。
 
 ## 指标口径
 

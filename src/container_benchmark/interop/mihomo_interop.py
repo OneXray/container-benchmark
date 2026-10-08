@@ -274,7 +274,7 @@ def requests(root, case, peer, pin):
     root = Path(root)
     config = {
         "ipv6": False,
-        "socks-port": SOCKS_PORT,
+        "mixed-port": SOCKS_PORT,
         "allow-lan": False,
         "tun": {"enable": False},
         "dns": {"enable": False},
@@ -284,19 +284,12 @@ def requests(root, case, peer, pin):
     data = root / "data"
     data.mkdir()
     rows = [
-        {"apiVersion": 5, "method": "initialize", "payload": {"dataDir": str(data)}},
-        {"apiVersion": 5, "method": "createInstance", "payload": {}},
+        {"method": "initialize", "payload": {"dataDir": str(data)}},
+        {"method": "createInstance", "payload": {}},
         {
-            "apiVersion": 5,
-            "method": "prepare",
-            "instanceId": "@INSTANCE@",
-            "payload": {"configYaml": json.dumps(config, separators=(",", ":"))},
-        },
-        {
-            "apiVersion": 5,
             "method": "start",
             "instanceId": "@INSTANCE@",
-            "payload": {},
+            "payload": {"configYaml": json.dumps(config, separators=(",", ":"))},
         },
     ]
     path = root / "requests.jsonl"

@@ -1,17 +1,14 @@
-"""Normal VCore production-ABI launch adapter for the common CLI workload."""
+"""Normal VCore foreground CLI adapter for the common native-TUN workload."""
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
-import time
 import tomllib
 from pathlib import Path, PurePosixPath
 
 from .inputs import save, sha256
-from .paths import FIXTURE_ROOT
 
 
 def source_mounts(source):
@@ -56,37 +53,62 @@ def source_mounts(source):
 
 def build(guest, root, *, geodata_update=False):
     root = Path(root)
-    features = "ffi,benchmark-geodata-http" if geodata_update else "ffi"
+    if geodata_update:
+        raise ValueError("CLI GeoData update pressure has no live state observer")
     guest.execute(
         [
             "/bin/sh",
             "-ec",
             "cd /src/cores/vcore; "
             "CARGO_TARGET_DIR=/run/benchmark/vcore-target "
-            f"cargo build --locked --release --lib --features {features} "
+            "cargo build --locked --release --no-default-features "
+            "--features cli --lib --bin vcore "
             "--message-format=json-render-diagnostics "
             "> /run/benchmark/vcore-build-artifacts.jsonl; "
-            "cc -O2 -Wall -Wextra -Werror -I /src/cores/vcore/include "
-            "/src/benchmark/fixtures/vcore/launcher.c "
-            "/run/benchmark/vcore-target/release/libvcore.a "
-            "-pthread -ldl -lm -lstdc++ -o /run/benchmark/artifacts/vcore",
+            "cp /run/benchmark/vcore-target/release/vcore "
+            "/run/benchmark/artifacts/vcore",
         ],
         root / "vcore-build.log",
         timeout=4000,
     )
+    guest.execute(
+        ["/run/benchmark/artifacts/vcore", "-v"],
+        root / "vcore-version.log",
+        timeout=30,
+    )
+    source = Path(guest.sources["vcore"])
+    package = tomllib.loads((source / "Cargo.toml").read_text())["package"]
+    expected = f"VCore;engine=rust;coreVersion={package['version']}"
+    binary = root / "artifacts/vcore"
+    with binary.open("rb") as stream:
+        header = stream.read(20)
+    if (
+        len(header) != 20
+        or header[:6] != b"\x7fELF\x02\x01"
+        or int.from_bytes(header[18:20], "little") != 183
+    ):
+        raise ValueError("VCore DUT must be a native Linux arm64 ELF executable")
+    version = (root / "vcore-version.log").read_text().strip()
+    if expected not in version or expected.encode() not in binary.read_bytes():
+        raise ValueError("VCore CLI build identity does not match the selected source")
     return {
-        "binary_sha256": sha256(root / "artifacts/vcore"),
-        "library_sha256": sha256(root / "vcore-target/release/libvcore.a"),
-        "library_format": "staticlib",
-        "library_name": "libvcore.a",
-        "build": "normal Release default protocol features plus production ffi"
-        + (" and isolated benchmark-geodata-http" if geodata_update else ""),
-        "launcher_sha256": sha256(FIXTURE_ROOT / "vcore/launcher.c"),
+        "binary_sha256": sha256(binary),
+        "binary_format": "ELF64 little-endian aarch64",
+        "build_identity": expected,
+        "runtime_version": version,
+        "lockfile_sha256": sha256(source / "Cargo.lock"),
+        "library_sha256": sha256(root / "vcore-target/release/libvcore.rlib"),
+        "library_format": "rlib",
+        "library_name": "libvcore.rlib",
+        "library_use": "builder-only offline GeoData probe; not the measured process",
+        "build": "locked Release production cli features; no FFI or interop features",
         "source_changes": False,
     }
 
 
 def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=False):
+    if geodata_update:
+        raise ValueError("CLI GeoData update pressure has no live state observer")
     root, assets = Path(root), Path(assets)
     data = root / "data"
     geodata = data / "geodata"
@@ -96,7 +118,14 @@ def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=Fals
         shutil.copyfile(assets / name, geodata / name)
     nameserver = f"udp://{dns.ipv4}:24004#DIRECT"
     config = {
-        "tun": {"enable": True},
+        "tun": {
+            "enable": True,
+            "file-descriptor": tun.fd,
+            "device": tun.device,
+            "mtu": 1500,
+            "dns-hijack": ["198.18.0.1:53"],
+            "udp-timeout": 60,
+        },
         "ipv6": False,
         "proxies": [
             {
@@ -121,84 +150,22 @@ def configure(root, assets, witnesses, origins, dns, tun, *, geodata_update=Fals
             "MATCH,blocked",
         ],
     }
-    if geodata_update:
-        config.update(
-            {
-                "geox-url": {
-                    kind: f"http://geodata.update.test:24006/{root.name}/{kind}.dat"
-                    for kind in ("geosite", "geoip")
-                },
-                "geo-auto-update": True,
-                "geo-update-interval": 24,
-            }
-        )
-        config["proxies"].append(
-            {
-                "name": "geodata-fixture",
-                "type": "socks5",
-                "server": origins[1].ipv4,
-                "port": 24005,
-            }
-        )
-        config["proxy-groups"].append(
-            {
-                "name": "geodata-update",
-                "type": "select",
-                "proxies": ["geodata-fixture"],
-            }
-        )
-        config["rules"][-1] = "MATCH,geodata-update"
     save(root / "config.json", config)
-    requests = [
-        {"apiVersion": 5, "method": "initialize", "payload": {"dataDir": str(data)}},
-        {"apiVersion": 5, "method": "createInstance", "payload": {}},
-        {
-            "apiVersion": 5,
-            "method": "prepare",
-            "instanceId": "@INSTANCE@",
-            "payload": {"configYaml": json.dumps(config, separators=(",", ":"))},
-        },
-        {
-            "apiVersion": 5,
-            "method": "start",
-            "instanceId": "@INSTANCE@",
-            "payload": {"tunFd": tun.fd, "tunFraming": "rawIp"},
-        },
-    ]
-    request_path = root / "requests.jsonl"
-    request_path.write_text(
-        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in requests)
-    )
     return {
         "config": root / "config.json",
-        "argv": [str(root / "artifacts/vcore"), str(request_path)]
-        + ([str(root / "geodata-state.jsonl")] if geodata_update else []),
+        "argv": [
+            str(root / "artifacts/vcore"),
+            "-d",
+            str(data),
+            "-f",
+            str(root / "config.json"),
+        ],
         "pass_fds": (tun.fd,),
         "env": {},
         "differences": [
-            "VCore has no stock Linux CLI; minimal C adapter invokes only the public "
-            "production lifecycle ABI and uses the same external PID observer.",
+            "Normal production VCore CLI; the host-owned single raw-IP TUN fd "
+            "is declared in YAML and inherited at exec.",
             "VCore requires an unused concrete node and a declared REJECT group; "
             "neither introduces an additional traffic path.",
-        ]
-        + (
-            [
-                "Opt-in update stress uses an isolated HTTP/SOCKS5 fixture and "
-                "the normal streaming updater; no production TLS claim. Public "
-                "getGeoDataState is sampled every 100 ms in the measured core."
-            ]
-            if geodata_update
-            else []
-        ),
+        ],
     }
-
-
-def wait_ready(process, log, timeout=60):
-    deadline = time.monotonic() + timeout
-    while True:
-        process.sample()
-        if "benchmark-ready" in Path(log).read_text(errors="replace"):
-            return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("VCore production lifecycle startup did not complete")
-        time.sleep(0.1)

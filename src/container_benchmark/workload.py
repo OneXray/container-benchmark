@@ -45,6 +45,86 @@ FLOW_PHASE_ERRORS = {
     "incomplete or incorrect payload": "flow-incomplete-payload",
 }
 
+READINESS_CLEANUP_SECONDS = 2
+
+
+class ReadinessPending(RuntimeError):
+    """A classified startup connection or preparation timeout, safe to retry."""
+
+
+def check_readiness(rows):
+    """Fail closed on payload/source/output errors; only classified setup retries."""
+    if not isinstance(rows, list) or len(rows) != 2:
+        raise RuntimeError("invalid readiness branch output")
+    pending = []
+    for index, branch in enumerate(rows):
+        if (
+            not isinstance(branch, dict)
+            or type(branch.get("complete")) is not bool
+            or branch.get("probe") is not True
+            or branch.get("entrypoint") != "linux-real-tun"
+            or type(branch.get("driver_exit_code")) is not int
+            or branch.get("driver_exit_code") not in (0, 1)
+        ):
+            raise RuntimeError("invalid readiness driver output")
+        flows = branch.get("flows")
+        if not isinstance(flows, list) or not flows:
+            raise RuntimeError("missing readiness flow output")
+        failed = False
+        for flow in flows:
+            if not isinstance(flow, dict):
+                raise RuntimeError("invalid readiness flow output")
+            if phase := flow.get("error"):
+                failed = True
+                kind = flow.get("setup_error_kind")
+                if (
+                    phase in ("control connect", "data connect")
+                    and kind in ("timeout", "connection-refused")
+                ) or (phase == "data readiness" and kind == "timeout"):
+                    pending.append(f"branch-{index}: {phase}: {kind}")
+                    continue
+                code = (
+                    FLOW_PHASE_ERRORS.get(phase, "unclassified")
+                    if isinstance(phase, str)
+                    else "invalid-output"
+                )
+                kind = (
+                    kind
+                    if isinstance(kind, str)
+                    and kind in ENDPOINT_ERROR_KINDS | {"dns-origin-mismatch"}
+                    else "unclassified"
+                )
+                raise RuntimeError(
+                    f"readiness business failure: branch-{index}: {code}: {kind}"
+                )
+            if flow.get("source_verified") is not True:
+                raise RuntimeError(f"readiness source witness failed: branch-{index}")
+            left, right = flow.get("sent"), flow.get("received")
+            if (
+                not isinstance(left, dict)
+                or not isinstance(right, dict)
+                or left.get("bytes") != 32
+                or right.get("bytes") != 32
+                or not left.get("sha256")
+                or left.get("sha256") != right.get("sha256")
+                or any(
+                    end.get("error") or end.get("error_kind") for end in (left, right)
+                )
+            ):
+                raise RuntimeError(f"readiness payload witness failed: branch-{index}")
+        if branch["complete"] != (not failed) or branch["driver_exit_code"] != int(
+            failed
+        ):
+            raise RuntimeError("inconsistent readiness completion output")
+        if not failed and (
+            len(flows) != 2
+            or {flow.get("direction") for flow in flows} != {"up", "down"}
+            or any(flow.get("transport") != "tcp" for flow in flows)
+        ):
+            raise RuntimeError("invalid readiness duplex output")
+    if pending:
+        raise ReadinessPending("; ".join(pending))
+
 
 def summarize(traffic, *, transport, mbps, seconds, flows, dns=None, dns_qps=0):
     """UDP loss is a metric, not a prerequisite; corruption remains a failure."""
@@ -401,16 +481,28 @@ def run(
     source,
     *,
     probe=False,
+    deadline=None,
 ):
     from .processes import OwnedProcess
 
+    if deadline is not None and not probe:
+        raise ValueError("readiness deadline is only valid for probes")
+    operation_end = (
+        deadline - READINESS_CLEANUP_SECONDS if deadline is not None else float("inf")
+    )
+    if time.monotonic() >= operation_end:
+        raise TimeoutError("readiness total deadline leaves no cleanup budget")
     directory.mkdir()
     release = directory / "start"
     processes = []
     # Start the common preparation budget before any inner readiness timer.
-    deadline = time.monotonic() + 15
+    preparation_end = min(time.monotonic() + 15, operation_end)
     with _paired_readiness_errors(processes), contextlib.ExitStack() as stack:
         for index, origin in enumerate(origins):
+            if time.monotonic() >= preparation_end:
+                if probe:
+                    raise ReadinessPending("preparation-timeout")
+                raise TimeoutError("paired Linux traffic readiness timed out")
             label = "hit" if index == 0 else "miss"
             ready, log = (
                 directory / (label + "-ready.json"),
@@ -435,6 +527,7 @@ def run(
                     log,
                     record,
                     limit=max(2 * 1024 * 1024, args.flows * (args.seconds + 3) * 16),
+                    deadline=deadline,
                 )
             )
             processes.append((owner, ready, log, record))
@@ -451,24 +544,45 @@ def run(
             )
             processes.append((owner, ready, log, record))
         while True:
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= preparation_end:
+                if probe:
+                    raise ReadinessPending("preparation-timeout")
                 raise TimeoutError("paired Linux traffic readiness timed out")
             if all(ready.is_file() for _, ready, _, _ in processes):
                 break
             for owner, _, _, _ in processes:
                 owner.ensure_alive()
-            time.sleep(0.01)
+            time.sleep(min(0.01, max(0, preparation_end - time.monotonic())))
         release.write_text("start\n")
-        deadline = time.monotonic() + (1 if probe else args.seconds) + 15
+        completion_end = min(
+            time.monotonic() + (1 if probe else args.seconds) + 15, operation_end
+        )
         while any(owner.process.poll() is None for owner, _, _, _ in processes):
             if any(owner.overflow.is_set() for owner, _, _, _ in processes):
                 raise RuntimeError("paired Linux traffic output exceeded bound")
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= completion_end:
                 raise TimeoutError("paired Linux traffic did not join")
-            time.sleep(0.02)
+            time.sleep(min(0.02, max(0, completion_end - time.monotonic())))
     if not all(record.get("joined") for _, _, _, record in processes):
         raise RuntimeError("paired Linux traffic cleanup incomplete")
-    rows = [json.loads(log.read_text().splitlines()[0]) for _, _, log, _ in processes]
+    rows = []
+    for _, _, log, record in processes:
+        lines = log.read_text().splitlines()
+        if not lines or (
+            probe
+            and lines[1:]
+            and not (
+                lines[1:] == ["payload validation failed"]
+                and record.get("exit_code") == 1
+            )
+        ):
+            raise RuntimeError("invalid traffic driver output")
+        row = json.loads(lines[0])
+        if probe:
+            if not isinstance(row, dict):
+                raise RuntimeError("invalid readiness driver output")
+            row["driver_exit_code"] = record.get("exit_code")
+        rows.append(row)
     dns = None
     if len(rows) == 3:
         dns = rows[2]

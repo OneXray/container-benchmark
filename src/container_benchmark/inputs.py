@@ -54,7 +54,7 @@ def source_identity(source: Path) -> dict:
         )
 
     try:
-        return {
+        identity = {
             "path": str(source),
             "commit": git("rev-parse", "HEAD").decode().strip(),
             "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
@@ -62,7 +62,23 @@ def source_identity(source: Path) -> dict:
             "working_diff_sha256": hashlib.sha256(
                 git("diff", "--binary", "HEAD")
             ).hexdigest(),
+            "untracked_files": {
+                os.fsdecode(name): (
+                    hashlib.sha256(
+                        os.fsencode(os.readlink(source / os.fsdecode(name)))
+                    ).hexdigest()
+                    if (source / os.fsdecode(name)).is_symlink()
+                    else sha256(source / os.fsdecode(name))
+                )
+                for name in git(
+                    "ls-files", "--others", "--exclude-standard", "-z"
+                ).split(b"\0")
+                if name
+            },
         }
+        if (source / "Cargo.lock").is_file():
+            identity["lockfile_sha256"] = sha256(source / "Cargo.lock")
+        return identity
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError("explicit source must be a readable Git checkout") from error
 

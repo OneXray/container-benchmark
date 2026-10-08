@@ -30,7 +30,7 @@ static int invoke(const char *request, int create) {
 static int lifecycle(const char *method) {
     char request[160];
     snprintf(request, sizeof(request),
-        "{\"apiVersion\":5,\"method\":\"%s\",\"instanceId\":\"%s\",\"payload\":{}}", method, instance);
+        "{\"method\":\"%s\",\"instanceId\":\"%s\",\"payload\":{}}", method, instance);
     return invoke(request, 0);
 }
 
@@ -59,13 +59,13 @@ int main(int argc, char **argv) {
     size_t capacity = 0;
     int good = 1, count = 0;
     while (getline(&line, &capacity, source) >= 0) {
-        if (++count > 4 || strlen(line) > 1024 * 1024) { good = 0; break; }
+        if (++count > 3 || strlen(line) > 1024 * 1024) { good = 0; break; }
         char *request = substitute(line);
         if (!request || !invoke(request, count == 2)) good = 0;
         free(request);
         if (!good) break;
     }
-    if (ferror(source) || count != 4) good = 0;
+    if (ferror(source) || count != 3) good = 0;
     free(line); fclose(source);
     if (good) {
         FILE *ready = fopen(argv[2], "w");

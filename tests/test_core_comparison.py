@@ -10,7 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 from container_benchmark import core_comparison as comparison
-from container_benchmark import core_vcore_adapter, native_process, workload
+from container_benchmark import native_process, workload
+
+
+def readiness_rows():
+    return json.loads((Path(__file__).parent / "fixtures/readiness.json").read_text())
 
 
 class ComparisonTests(unittest.TestCase):
@@ -40,15 +44,27 @@ class ComparisonTests(unittest.TestCase):
 
         process = Mock()
         process.record = {"status": "PASS", "peak_bytes": 12345}
-        process.boundary.side_effect = [
-            {"user_ns": 0, "system_ns": 0},
-            {"user_ns": 1_000_000, "system_ns": 0},
-        ]
+        boundaries = iter(
+            [
+                {"user_ns": 0, "system_ns": 0},
+                {"user_ns": 1_000_000, "system_ns": 0},
+            ]
+        )
+
+        def boundary(stage):
+            events.append(stage)
+            return next(boundaries)
+
+        process.boundary.side_effect = boundary
         process.close.side_effect = lambda: events.append("close")
 
         def start(*args, **kwargs):
             events.append("process")
             return process
+
+        def run(*args, **kwargs):
+            events.append("readiness" if kwargs.get("probe") else "load")
+            return readiness_rows(), {}
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -85,9 +101,8 @@ class ComparisonTests(unittest.TestCase):
                 ),
                 patch.object(comparison, "_configure", side_effect=configure),
                 patch.object(native_process, "NativeProcess", side_effect=start),
-                patch.object(core_vcore_adapter, "wait_ready"),
                 patch.object(comparison.time, "sleep"),
-                patch.object(workload, "run", return_value=([{"complete": True}], {})),
+                patch.object(workload, "run", side_effect=run),
                 patch.object(workload, "summarize", return_value={}),
                 patch.object(workload, "directional_packets", return_value={}),
             ):
@@ -109,6 +124,81 @@ class ComparisonTests(unittest.TestCase):
                 self.assertEqual(events[-2:], ["close", "observe"])
                 self.assertEqual(report["status"], "MEASURED")
                 self.assertTrue(report["host_tun_preserved"])
+                self.assertEqual(
+                    report["readiness"],
+                    {
+                        "kind": "native-tun-traffic",
+                        "attempts": 1,
+                        "retries": [],
+                        "status": "READY",
+                    },
+                )
+                self.assertLess(events.index("readiness"), events.index("mixed:start"))
+                self.assertLess(events.index("mixed:start"), events.index("load"))
+
+    def test_readiness_retries_real_traffic_and_checks_the_observed_pid(self):
+        process = Mock()
+        probe = Mock(
+            side_effect=[
+                workload.ReadinessPending("preparation-timeout"),
+                (readiness_rows(), None),
+            ]
+        )
+        with patch.object(comparison.time, "sleep"):
+            result = comparison._wait_ready(process, probe)
+        self.assertEqual(result["attempts"], 2)
+        first, second = (call.args for call in probe.call_args_list)
+        self.assertEqual((first[0], second[0]), (1, 2))
+        self.assertEqual(first[1], second[1])
+        self.assertEqual(
+            result["retries"], [{"attempt": 1, "reason": "preparation-timeout"}]
+        )
+        self.assertEqual(process.sample.call_count, 3)
+
+    def test_readiness_failure_is_bounded_and_pid_failure_is_not_retried(self):
+        process = Mock()
+        probe = Mock(side_effect=workload.ReadinessPending("preparation-timeout"))
+        record = {}
+        with (
+            patch.object(comparison.time, "monotonic", side_effect=[0, 0, 0, 2]),
+            patch.object(comparison.time, "sleep"),
+            self.assertRaisesRegex(TimeoutError, "native TUN traffic readiness"),
+        ):
+            comparison._wait_ready(process, probe, timeout=1, record=record)
+        probe.assert_called_once_with(1, 1)
+        self.assertEqual(record["status"], "ERROR")
+        self.assertEqual(len(record["retries"]), 1)
+        process.sample.side_effect = RuntimeError("PID changed")
+        probe.reset_mock()
+        with self.assertRaisesRegex(RuntimeError, "PID changed"):
+            comparison._wait_ready(process, probe)
+        probe.assert_not_called()
+
+    def test_late_success_cannot_pass_the_total_deadline(self):
+        process, probe = Mock(), Mock(return_value=(readiness_rows(), None))
+        record = {}
+        with (
+            patch.object(comparison.time, "monotonic", side_effect=[0, 0, 2]),
+            self.assertRaisesRegex(TimeoutError, "total deadline"),
+        ):
+            comparison._wait_ready(process, probe, timeout=1, record=record)
+        probe.assert_called_once_with(1, 1)
+        self.assertEqual(record["status"], "ERROR")
+
+    def test_unclassified_cleanup_output_and_os_errors_fail_without_retry(self):
+        for error in (
+            RuntimeError("cleanup incomplete"),
+            RuntimeError("output bound"),
+            OSError("unexpected I/O"),
+            TimeoutError("payload completion"),
+        ):
+            with self.subTest(error=error):
+                probe, record = Mock(side_effect=error), {}
+                with self.assertRaises(type(error)):
+                    comparison._wait_ready(Mock(), probe, record=record)
+                self.assertEqual(probe.call_count, 1)
+                self.assertEqual(record["retries"], [])
+                self.assertIn(str(error), record["failure"])
 
     def test_both_cores_fail_when_actual_queue_changes_after_start(self):
         for core in comparison.CORES:
@@ -216,13 +306,15 @@ class ComparisonTests(unittest.TestCase):
                 self.assertEqual(report["cases"][0]["peak_bytes"], peak)
                 self.assertEqual(report["cases"][0]["memory_target_met"], expected)
 
-    def test_geodata_update_is_explicit_stress_only_and_needs_overlap_window(self):
+    def test_geodata_update_is_rejected_before_resources_without_live_observation(self):
         with tempfile.TemporaryDirectory() as source:
-            args = comparison.parse_args(
-                ["--source", "vcore=" + source, "--geodata-update"], stress=True
-            )
-            self.assertTrue(args.geodata_update)
-            self.assertEqual((args.rates, args.seconds), ([2000], 60))
+            diagnostics = io.StringIO()
+            with contextlib.redirect_stderr(diagnostics), self.assertRaises(SystemExit):
+                comparison.parse_args(
+                    ["--source", "vcore=" + source, "--geodata-update"], stress=True
+                )
+            self.assertIn("unavailable", diagnostics.getvalue())
+            self.assertIn("live state observer", diagnostics.getvalue())
             for values, stress in (
                 (["--core", "mihomo", "--geodata-update"], False),
                 (

@@ -40,14 +40,16 @@ def parse_args(argv=None, *, stress=False):
         parser.add_argument(
             "--geodata-update",
             action="store_true",
-            help="reload the frozen assets through the real updater during pressure",
+            help="unavailable: CLI pressure has no live GeoData state observer",
         )
     args = parser.parse_args(argv)
     args.transport, args.dns_qps = "mixed", 1000
     if not 1 <= args.seconds <= 1800:
         parser.error("duration must be 1..1800 seconds")
-    if stress and args.geodata_update and args.seconds < 20:
-        parser.error("GeoData update pressure requires at least 20 seconds")
+    if stress and args.geodata_update:
+        parser.error(
+            "--geodata-update is unavailable without a CLI live state observer"
+        )
     args.stress = stress
     args.core, args.rates = (
         list(dict.fromkeys(args.core)),
@@ -105,8 +107,48 @@ def _configure(core, root, assets, samples, origins, dns, tun, *, geodata_update
     return result
 
 
+def _wait_ready(process, probe, *, timeout=60, record=None):
+    """Run bounded native-TUN business probes against the observed executable."""
+    from .workload import ReadinessPending, check_readiness
+
+    deadline = time.monotonic() + timeout
+    record = {} if record is None else record
+    record.update(kind="native-tun-traffic", attempts=0, retries=[], status="WAITING")
+    try:
+        while time.monotonic() < deadline:
+            # PID/observer failures are never startup retries.
+            process.sample()
+            record["attempts"] += 1
+            try:
+                rows, _ = probe(record["attempts"], deadline)
+                check_readiness(rows)
+            except ReadinessPending as error:
+                record["retries"].append(
+                    {"attempt": record["attempts"], "reason": str(error)}
+                )
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+                continue
+            process.sample()
+            if time.monotonic() >= deadline:
+                break
+            record["status"] = "READY"
+            return record
+        raise TimeoutError("native TUN traffic readiness total deadline exceeded")
+    except Exception as error:
+        record.update(status="ERROR", failure=f"{type(error).__name__}: {error}")
+        raise
+
+
+def _check_sources(sources, expected):
+    from .inputs import source_identity
+
+    for name, path in sources.items():
+        if source_identity(path) != expected[name]:
+            raise RuntimeError(f"selected source changed during the session: {name}")
+
+
 def _guest_run(root, core):
-    from . import core_vcore_adapter, workload
+    from . import workload
     from .inputs import save
     from .native_process import NativeProcess
     from .paths import FIXTURE_ROOT
@@ -148,24 +190,24 @@ def _guest_run(root, core):
             )
             report["measurement"] = process.record
             try:
-                log = root / "process/core.log"
-                if core == "vcore":
-                    core_vcore_adapter.wait_ready(process, log)
-                time.sleep(2)
-                tun.reject(samples["ip_positive"][4])
-                probes, _ = workload.run(
-                    root,
-                    root / "readiness",
-                    args,
-                    "tcp",
-                    tun,
-                    samples,
-                    origins,
-                    request["source"],
-                    probe=True,
+                report["readiness"] = {}
+                _wait_ready(
+                    process,
+                    lambda attempt, deadline: workload.run(
+                        root,
+                        root / f"readiness-{attempt}",
+                        args,
+                        "tcp",
+                        tun,
+                        samples,
+                        origins,
+                        request["source"],
+                        probe=True,
+                        deadline=deadline,
+                    ),
+                    record=report["readiness"],
                 )
-                if not all(row.get("complete") for row in probes):
-                    raise RuntimeError("native TUN traffic readiness failed")
+                tun.reject(samples["ip_positive"][4])
                 report["route_checks"] = {
                     "passed": True,
                     "geoip_reject": True,
@@ -183,9 +225,6 @@ def _guest_run(root, core):
                         origins,
                         request["source"],
                     )
-                    load_end_ns = (
-                        root / scene / "start"
-                    ).stat().st_mtime_ns + args.seconds * 1_000_000_000
                     after = process.boundary(scene + ":end")
                     elapsed = time.monotonic() - clock
                     case = workload.summarize(
@@ -214,38 +253,6 @@ def _guest_run(root, core):
                             traffic
                         )
                     report["cases"].append(case)
-                    if getattr(args, "geodata_update", False):
-                        from .geodata_update import summarize as summarize_update
-
-                        update = summarize_update(
-                            root,
-                            root / "rules" / request["assets_directory"],
-                            load_end_ns=load_end_ns,
-                        )
-                        report["geodata_update"] = update
-                        if update["status"] != "PASS":
-                            raise RuntimeError(
-                                "real GeoData update did not complete during load"
-                            )
-                        tun.reject(samples["ip_positive"][4])
-                        restored, _ = workload.run(
-                            root,
-                            root / "restored-readiness",
-                            args,
-                            "tcp",
-                            tun,
-                            samples,
-                            origins,
-                            request["source"],
-                            probe=True,
-                        )
-                        update["restored_route_checks"] = all(
-                            row.get("complete") for row in restored
-                        )
-                        if not update["restored_route_checks"]:
-                            raise RuntimeError(
-                                "post-update GeoData route witnesses failed"
-                            )
                     save(root / "report.json", report)
                     time.sleep(1)
             finally:
@@ -358,6 +365,13 @@ def main(argv=None, *, stress=False):
             report["path_dependencies"] = {
                 target: source_identity(Path(host)) for host, target in mounts
             }
+            path_sources = {target: Path(host) for host, target in mounts}
+
+            def check_sources():
+                _check_sources(parsed.sources, session.identities)
+                _check_sources(path_sources, report["path_dependencies"])
+
+            check_sources()
             with LinuxGuest(
                 root,
                 image,
@@ -391,13 +405,12 @@ def main(argv=None, *, stress=False):
                         report["identities"][core]["runtime_version"] = (
                             (root / (core + "-version.log")).read_text().strip()
                         )
+            check_sources()
             _summary(root, report)
             args = workload.fixed_args(
                 parsed.rates[0], parsed.seconds, parsed.transport, parsed.dns_qps
             )
             args.geodata_update = getattr(parsed, "geodata_update", False)
-            if args.geodata_update:
-                args.geodata_assets = str(assets)
             with workload.origins(root, args, samples, image) as (origins, dns, peers):
                 report["origins"] = peers
                 if any(contains_ip(assets, row.ipv4) for row in origins):
@@ -406,6 +419,7 @@ def main(argv=None, *, stress=False):
                     )
                 for rate in parsed.rates:
                     for core in parsed.core:
+                        check_sources()
                         args = workload.fixed_args(
                             rate, parsed.seconds, parsed.transport, parsed.dns_qps
                         )
@@ -453,6 +467,8 @@ def main(argv=None, *, stress=False):
                             result["environment"] = guest.record
                             report["runs"][job.name] = result
                             _summary(root, report)
+            check_sources()
+            report["source_unchanged"] = True
             complete = len(report["runs"]) == len(parsed.core) * len(
                 parsed.rates
             ) and all(

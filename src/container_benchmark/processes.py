@@ -13,9 +13,12 @@ from pathlib import Path
 
 
 class OwnedProcess:
-    def __init__(self, command, log, record, *, env=None, cwd=None, limit=1024**2):
+    def __init__(
+        self, command, log, record, *, env=None, cwd=None, limit=1024**2, deadline=None
+    ):
         self.command, self.log_path, self.record = command, Path(log), record
         self.env, self.cwd, self.limit = env, cwd, limit
+        self.deadline = deadline
         self.process = self.reader = self.log = None
         self.overflow = threading.Event()
 
@@ -80,19 +83,24 @@ class OwnedProcess:
             self.record["unexpected_exit"] = self.process.returncode
             raise RuntimeError("owned process exited before completion")
 
+    def _remaining(self, limit, fraction=1):
+        if self.deadline is None:
+            return limit
+        return max(0, min(limit, (self.deadline - time.monotonic()) * fraction))
+
     def __exit__(self, *_):
         try:
             if self.process.poll() is None:
                 self._signal(signal.SIGTERM)
                 try:
-                    self.process.wait(timeout=5)
+                    self.process.wait(timeout=self._remaining(5, 0.25))
                 except subprocess.TimeoutExpired:
                     self._signal(signal.SIGKILL)
-                    self.process.wait(timeout=5)
-            self.reader.join(timeout=5)
+                    self.process.wait(timeout=self._remaining(5, 0.5))
+            self.reader.join(timeout=self._remaining(5, 0.5))
             if self.reader.is_alive():
                 self._signal(signal.SIGKILL)
-                self.reader.join(timeout=5)
+                self.reader.join(timeout=self._remaining(5))
             if self.reader.is_alive():
                 raise RuntimeError("owned output reader did not stop")
             self.record.update(joined=True, exit_code=self.process.returncode)

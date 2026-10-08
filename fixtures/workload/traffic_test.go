@@ -18,6 +18,22 @@ import (
 	"time"
 )
 
+func TestReadinessSetupErrorsKeepFixedKinds(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("PRIVATE_MARKER: %w", syscall.ECONNREFUSED), "connection-refused"},
+		{fmt.Errorf("PRIVATE_MARKER: %w", os.ErrDeadlineExceeded), "timeout"},
+		{fmt.Errorf("PRIVATE_MARKER: %w", errKernelDNSOrigin), "dns-origin-mismatch"},
+		{errors.New("PRIVATE_MARKER"), "other-io"},
+	} {
+		if setupErrorKind(test.err) != test.want {
+			t.Fatal("setup failure lost its fixed readiness classification")
+		}
+	}
+}
+
 func TestStartBarrierKeepsBoundedWaitAndSafeErrorClasses(t *testing.T) {
 	if startBarrierWait != 15*time.Second {
 		t.Fatal("inner barrier no longer matches the outer 15-second budget")

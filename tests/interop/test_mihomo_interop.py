@@ -103,10 +103,13 @@ class InteropTests(unittest.TestCase):
             rows = [json.loads(row) for row in path.read_text().splitlines()]
         self.assertEqual(
             [row["method"] for row in rows],
-            ["initialize", "createInstance", "prepare", "start"],
+            ["initialize", "createInstance", "start"],
         )
-        self.assertEqual(rows[-1]["payload"], {})
+        self.assertTrue(all("apiVersion" not in row for row in rows))
         config = json.loads(rows[2]["payload"]["configYaml"])
+        self.assertEqual(config["mixed-port"], interop.SOCKS_PORT)
+        self.assertNotIn("port", config)
+        self.assertNotIn("socks-port", config)
         self.assertFalse(config["allow-lan"])
         self.assertFalse(config["tun"]["enable"])
         self.assertEqual(config["rules"], ["MATCH,edge"])

@@ -56,6 +56,7 @@ type flowResult struct {
 	Received       result `json:"received"`
 	Error          string `json:"error,omitempty"`
 	SourceVerified bool   `json:"source_verified"`
+	SetupErrorKind string `json:"setup_error_kind,omitempty"`
 }
 
 type flowReadyAck struct {
@@ -75,6 +76,7 @@ var (
 	errBarrierReadyIO   = errors.New("start barrier ready_io")
 	errBarrierReadIO    = errors.New("start barrier read_io")
 	errBarrierInvalid   = errors.New("invalid start barrier")
+	errKernelDNSOrigin  = errors.New("TUN DNS origin mismatch")
 )
 
 const startBarrierWait = 15 * time.Second
@@ -110,6 +112,17 @@ func ioErrorKind(err error) string {
 	default:
 		return "other-io"
 	}
+}
+
+// Setup retry policy must distinguish unavailable endpoints from corrupt DNS.
+func setupErrorKind(err error) string {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return "connection-refused"
+	}
+	if errors.Is(err, errKernelDNSOrigin) {
+		return "dns-origin-mismatch"
+	}
+	return ioErrorKind(err)
 }
 
 func frameSize(r request) int {
@@ -794,7 +807,7 @@ func kernelResolve(name, expected string) error {
 	}
 	reply = reply[:n]
 	if !validKernelDNSReply(query, reply, ip) {
-		return errors.New("TUN DNS origin mismatch")
+		return errKernelDNSOrigin
 	}
 	return nil
 }
@@ -896,9 +909,13 @@ func clientFlow(peer string, r request, ready *sync.WaitGroup, start <-chan stru
 		}
 	}()
 	fail := func(message string) []flowResult { outcome.Error = message; return []flowResult{outcome} }
+	failSetup := func(message string, err error) []flowResult {
+		outcome.SetupErrorKind = setupErrorKind(err)
+		return fail(message)
+	}
 	control, err := net.DialTimeout("tcp", peer, 5*time.Second)
 	if err != nil {
-		return fail("control connect")
+		return failSetup("control connect", err)
 	}
 	defer control.Close()
 	setFlowControlDeadline(control, r.Seconds)
@@ -925,7 +942,7 @@ func clientFlow(peer string, r request, ready *sync.WaitGroup, start <-chan stru
 		data, err = dialData(r, net.JoinHostPort(host, strconv.Itoa(answer.Port)))
 	}
 	if err != nil {
-		return fail("data connect")
+		return failSetup("data connect", err)
 	}
 	defer data.Close()
 	var ack flowReadyAck
@@ -939,8 +956,13 @@ func clientFlow(peer string, r request, ready *sync.WaitGroup, start <-chan stru
 			}
 		}
 	}
-	if decoder.Decode(&ack) != nil || !ack.Ready {
-		ack.Ready = false
+	if err := decoder.Decode(&ack); err != nil {
+		return failSetup("data readiness", err)
+	}
+	if !ack.Ready {
+		if r.ExpectedSource != "" && !ack.SourceVerified {
+			return fail("missing origin route witness")
+		}
 		return fail("data readiness")
 	}
 	outcome.SourceVerified = ack.SourceVerified
